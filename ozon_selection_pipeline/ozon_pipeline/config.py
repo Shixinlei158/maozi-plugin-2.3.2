@@ -17,6 +17,9 @@ class Settings:
     db_user: str = os.getenv("DB_USER", "root")
     db_password: str = os.getenv("DB_PASSWORD", "root")
     db_name: str = os.getenv("DB_NAME", "ozon_selection")
+    db_connect_timeout: int = int(os.getenv("DB_CONNECT_TIMEOUT", "60"))
+    db_read_timeout: int = int(os.getenv("DB_READ_TIMEOUT", "600"))
+    db_write_timeout: int = int(os.getenv("DB_WRITE_TIMEOUT", "600"))
     maozi_token: str = os.getenv("MAOZI_TOKEN", "")
     maozi_base_url: str = os.getenv("MAOZI_BASE_URL", "https://api.maozierp.com")
     maozi_plugin_version: str = os.getenv("MAOZI_PLUGIN_VERSION", "2.3.2")
@@ -34,6 +37,32 @@ class Settings:
     chrome_cdp_url: str = os.getenv("CHROME_CDP_URL", "")
     chrome_remote_debugging_port: int = int(os.getenv("CHROME_REMOTE_DEBUGGING_PORT", "9222"))
     chrome_headless: bool = os.getenv("CHROME_HEADLESS", "false").lower() in {"1", "true", "yes"}
+    chrome_launch_display: str = os.getenv("CHROME_LAUNCH_DISPLAY", "")
+    chrome_launch_xauthority: str = os.getenv("CHROME_LAUNCH_XAUTHORITY", "")
+    chrome_fingerprint_mask_enabled: bool = os.getenv("CHROME_FINGERPRINT_MASK_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    chrome_fingerprint_user_agent: str = os.getenv("CHROME_FINGERPRINT_USER_AGENT", "")
+    chrome_fingerprint_platform: str = os.getenv("CHROME_FINGERPRINT_PLATFORM", "Win32")
+    chrome_fingerprint_platform_label: str = os.getenv("CHROME_FINGERPRINT_PLATFORM_LABEL", "Windows")
+    chrome_fingerprint_hardware_concurrency: int = int(
+        os.getenv("CHROME_FINGERPRINT_HARDWARE_CONCURRENCY", "16")
+    )
+    chrome_fingerprint_device_memory: int = int(os.getenv("CHROME_FINGERPRINT_DEVICE_MEMORY", "8"))
+    chrome_fingerprint_locale: str = os.getenv("CHROME_FINGERPRINT_LOCALE", "zh-CN")
+    chrome_fingerprint_timezone: str = os.getenv("CHROME_FINGERPRINT_TIMEZONE", "")
+    chrome_fingerprint_screen_width: int = int(os.getenv("CHROME_FINGERPRINT_SCREEN_WIDTH", "1920"))
+    chrome_fingerprint_screen_height: int = int(os.getenv("CHROME_FINGERPRINT_SCREEN_HEIGHT", "1080"))
+    chrome_fingerprint_screen_avail_width: int = int(os.getenv("CHROME_FINGERPRINT_SCREEN_AVAIL_WIDTH", "0"))
+    chrome_fingerprint_screen_avail_height: int = int(os.getenv("CHROME_FINGERPRINT_SCREEN_AVAIL_HEIGHT", "0"))
+    chrome_fingerprint_color_depth: int = int(os.getenv("CHROME_FINGERPRINT_COLOR_DEPTH", "24"))
+    chrome_fingerprint_webgl_vendor: str = os.getenv("CHROME_FINGERPRINT_WEBGL_VENDOR", "Google Inc. (NVIDIA)")
+    chrome_fingerprint_webgl_renderer: str = os.getenv(
+        "CHROME_FINGERPRINT_WEBGL_RENDERER",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    )
     rub_to_cny_rate: str = os.getenv("RUB_TO_CNY_RATE", "0.0912")
     top_list_refresh_hours: int = int(os.getenv("TOP_LIST_REFRESH_HOURS", "24"))
     top_list_recheck_qualified_days: int = int(os.getenv("TOP_LIST_RECHECK_QUALIFIED_DAYS", "7"))
@@ -46,6 +75,13 @@ class Settings:
     top_list_default_max_pages: int = int(os.getenv("TOP_LIST_DEFAULT_MAX_PAGES", "100"))
     top_list_default_create_date_from: str = os.getenv("TOP_LIST_DEFAULT_CREATE_DATE_FROM", "2025-04-01")
     top_list_default_create_date_to: str = os.getenv("TOP_LIST_DEFAULT_CREATE_DATE_TO", date.today().isoformat())
+    top_list_sku3_batch_size: int = int(os.getenv("TOP_LIST_SKU3_BATCH_SIZE", "40"))
+    top_list_sku3_batch_concurrency: int = int(os.getenv("TOP_LIST_SKU3_BATCH_CONCURRENCY", "12"))
+    top_list_sku3_batch_chunk_delay_ms: int = int(os.getenv("TOP_LIST_SKU3_BATCH_CHUNK_DELAY_MS", "500"))
+    seed_pool_query_limit: int = int(os.getenv("SEED_POOL_QUERY_LIMIT", "500"))
+    seed_sku_workers: int = int(os.getenv("SEED_SKU_WORKERS", "4"))
+    seller_sku_workers: int = int(os.getenv("SELLER_SKU_WORKERS", "3"))
+    chrome_page_prune_threshold: int = int(os.getenv("CHROME_PAGE_PRUNE_THRESHOLD", "12"))
 
 
 settings = Settings()

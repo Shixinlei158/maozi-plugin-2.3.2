@@ -10,6 +10,7 @@ from .config import settings
 
 
 _DEFAULT_DATABASE = object()
+_IGNORABLE_MIGRATION_ERROR_CODES = {1060, 1061}
 
 
 def connect(database: Optional[str] | object = _DEFAULT_DATABASE):
@@ -22,6 +23,9 @@ def connect(database: Optional[str] | object = _DEFAULT_DATABASE):
         charset="utf8mb4",
         autocommit=False,
         cursorclass=DictCursor,
+        connect_timeout=settings.db_connect_timeout,
+        read_timeout=settings.db_read_timeout,
+        write_timeout=settings.db_write_timeout,
     )
     if db_name:
         kwargs["database"] = db_name
@@ -34,7 +38,14 @@ def run_sql_file(path: Path) -> None:
     with connect(database=None) as conn:
         with conn.cursor() as cur:
             for statement in statements:
-                cur.execute(statement)
+                try:
+                    cur.execute(statement)
+                except pymysql.MySQLError as exc:
+                    code = int(exc.args[0]) if exc.args else 0
+                    normalized = statement.lstrip().upper()
+                    if normalized.startswith("ALTER TABLE") and code in _IGNORABLE_MIGRATION_ERROR_CODES:
+                        continue
+                    raise
         conn.commit()
 
 
@@ -59,6 +70,17 @@ def execute(sql: str, params: Optional[dict[str, Any]] = None) -> int:
     with connect() as conn:
         with conn.cursor() as cur:
             rowcount = cur.execute(sql, params or {})
+        conn.commit()
+        return rowcount
+
+
+def execute_many(sql: str, params: Iterable[dict[str, Any]]) -> int:
+    rows = list(params)
+    if not rows:
+        return 0
+    with connect() as conn:
+        with conn.cursor() as cur:
+            rowcount = cur.executemany(sql, rows)
         conn.commit()
         return rowcount
 

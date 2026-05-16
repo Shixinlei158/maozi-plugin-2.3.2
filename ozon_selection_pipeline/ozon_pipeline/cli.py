@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from pathlib import Path
+from threading import Lock, local
 from typing import Any
 
 from . import db
@@ -14,31 +17,107 @@ from .maozi_api import MaoziClient
 from .ozon_frontend import OzonFrontendClient
 from .repository import (
     finish_top_list_run,
+    bulk_upsert_seller_home_skus,
     get_seller_shop,
     get_recent_top_list_run,
+    list_due_seller_shops,
     list_seed_pool_skus,
-    list_top_list_skus,
     mark_seed_status,
     mark_seed_pool_processed,
     mark_seed_pool_selected,
     mark_seller_collected,
-    mark_top_list_sku_processed,
-    mark_top_list_sku_selected,
     parse_sku3_response,
+    repair_seed_pool_offer_missing_rejections,
+    repair_seed_pool_failed_statuses,
     seed_pool_sku_due_state,
     seller_recently_collected,
     start_top_list_run,
     top_list_query_key,
-    top_list_sku_due_state,
     upsert_seller_shop,
     upsert_seed_sku,
-    upsert_seller_home_sku,
     upsert_seller_offer,
     upsert_sku3_response,
     upsert_seed_pool_item,
     upsert_top_list_item,
+    upsert_sku_universe,
 )
 from .rules import TOP_LIST_SEED_RULE, evaluate_selection_rule, evaluate_top_list_prefilter
+
+_VERBOSE = False
+
+
+class ManualInterventionRequired(RuntimeError):
+    pass
+
+
+def set_verbose(enabled: bool) -> None:
+    global _VERBOSE
+    _VERBOSE = bool(enabled)
+
+
+def is_verbose() -> bool:
+    return _VERBOSE
+
+
+def log_line(*parts: Any, prefix: str = "log") -> None:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] [{prefix}]", *parts)
+
+
+def vlog(*parts: Any, prefix: str = "verbose") -> None:
+    if not _VERBOSE:
+        return
+    log_line(*parts, prefix=prefix)
+
+
+def summarize_exception(exc: Exception | None) -> str:
+    if exc is None:
+        return ""
+    text = str(exc).strip().replace("\r", " ").replace("\n", " ")
+    if len(text) > 180:
+        text = text[:177] + "..."
+    return text
+
+
+def build_retry_reason(stage: str, exc: Exception | None = None) -> str:
+    detail = summarize_exception(exc)
+    if detail:
+        return f"待重试: {stage}获取失败，未完成最终判定; {detail}"
+    return f"待重试: {stage}获取失败，未完成最终判定"
+
+
+def should_defer_for_pending_refresh(metric: dict[str, Any], reasons: list[str]) -> bool:
+    if not (metric.get("status_update_sales") or metric.get("status_update_variant")):
+        return False
+    if not reasons:
+        return False
+    refreshable_reasons = {
+        "月销量缺失",
+        "重量(g)缺失",
+        "上架天数缺失",
+        "退货取消率缺失",
+        "发货模式不包含FBS",
+        "跟卖人数缺失",
+    }
+    return all(reason in refreshable_reasons for reason in reasons)
+
+
+def needs_manual_intervention(value: Any) -> bool:
+    text = str(value or "").lower()
+    markers = (
+        "cloudflare challenge",
+        "manual verification is required",
+        "正在进行安全验证",
+        "安全验证",
+        "cloudflare",
+    )
+    return any(marker.lower() in text for marker in markers)
+
+
+def cmd_open_gui(_: argparse.Namespace) -> None:
+    from .gui import main
+
+    main()
 
 
 def cmd_migrate(_: argparse.Namespace) -> None:
@@ -58,15 +137,45 @@ def cmd_import_seeds(args: argparse.Namespace) -> None:
             for row in reader:
                 sku = row.get("sku") or row.get("SKU")
                 if sku:
-                    upsert_seed_sku(str(sku).strip(), source=args.source)
-                    count += 1
+                    try:
+                        upsert_seed_sku(str(sku).strip(), source=args.source)
+                        count += 1
+                    except Exception as exc:
+                        print(f"  warn: failed to import seed sku {sku}: {exc}")
     else:
         for line in path.read_text(encoding="utf-8").splitlines():
             sku = line.strip()
             if sku:
-                upsert_seed_sku(sku, source=args.source)
-                count += 1
+                try:
+                    upsert_seed_sku(sku, source=args.source)
+                    count += 1
+                except Exception as exc:
+                    print(f"  warn: failed to import seed sku {sku}: {exc}")
     print(f"imported {count} seed skus")
+
+
+def cmd_repair_seed_pool_failures(args: argparse.Namespace) -> None:
+    if args.offer_missing_rejections:
+        repaired = repair_seed_pool_offer_missing_rejections(
+            source_type=args.source_type,
+            query_key=args.query_key or None,
+        )
+        mode = "offer_missing_rejections"
+    else:
+        repaired = repair_seed_pool_failed_statuses(
+            source_type=args.source_type,
+            query_key=args.query_key or None,
+            only_maozi_fetch_failures=not args.all_failed,
+        )
+        mode = "all_failed" if args.all_failed else "maozi_fetch_failures_only"
+    scope = args.query_key or "<all>"
+    print(
+        "seed-pool failure repair:",
+        f"source_type={args.source_type}",
+        f"query_key={scope}",
+        f"mode={mode}",
+        f"repaired_rows={repaired}",
+    )
 
 
 def build_browser_client(args: argparse.Namespace, *, headless_override: bool | None = None) -> BrowserOzonClient:
@@ -117,7 +226,11 @@ def default_top_list_filters(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_fetch_sku(args: argparse.Namespace) -> None:
     client = MaoziClient()
     browser = build_browser_client(args)
-    result = process_sku(args.sku, client, browser, source="manual_fetch")
+    with browser.session():
+        result = process_sku(args.sku, client, browser, source="manual_fetch")
+    if result.get("transient_failed"):
+        print("deferred sku:", result["sku"], result["rule_reason"])
+        return
     if not result["qualified"]:
         print("skipped sku:", result["sku"], result["rule_reason"])
         return
@@ -136,75 +249,32 @@ def cmd_fetch_sku(args: argparse.Namespace) -> None:
 
 
 def cmd_fetch_offers(args: argparse.Namespace) -> None:
-    client = OzonFrontendClient()
-    offers = client.seller_offers(args.sku)
+    browser = build_browser_client(args)
+    with browser.session():
+        offers = load_seller_offers(args.sku, browser)
     for offer in offers:
-        upsert_seller_offer(args.sku, offer)
+        try:
+            upsert_seller_offer(args.sku, offer)
+        except Exception as exc:
+            print(f"  warn: failed to store offer for {args.sku}: {exc}")
     print(f"stored {len(offers)} seller offers for sku {args.sku}")
-
-
-def cmd_fetch_offers_browser(args: argparse.Namespace) -> None:
-    client = build_browser_client(args)
-    offers = client.seller_offers(args.sku)
-    for offer in offers:
-        upsert_seller_offer(args.sku, offer)
-    print(f"stored {len(offers)} browser seller offers for sku {args.sku}")
 
 
 def cmd_fetch_seller_home(args: argparse.Namespace) -> None:
     client = build_browser_client(args)
-    result = client.seller_home_products(args.url, max_scrolls=args.max_scrolls)
+    with client.session():
+        result = client.seller_home_products(args.url, max_scrolls=args.max_scrolls)
     items = result.get("items") or []
     saved = 0
     for item in items:
-        if upsert_seller_home_sku(args.url, item):
-            saved += 1
+        try:
+            if upsert_seller_home_sku(args.url, item):
+                saved += 1
+        except Exception as exc:
+            print(f"  warn: failed to store seller-home sku: {exc}")
     print(f"stored {saved} seller-home products from {args.url}")
     for item in items[: args.preview]:
         print(item.get("href"), "|", item.get("title") or "<no-title>")
-
-
-def cmd_crawl_seller(args: argparse.Namespace) -> None:
-    browser = build_browser_client(args)
-    maozi = MaoziClient()
-    seller_result = browser.seller_home_products(args.url, max_scrolls=args.max_scrolls)
-    items = seller_result.get("items") or []
-    discovered = 0
-    processed = 0
-    qualified = 0
-    rejected = 0
-    total_seller_offers = 0
-    for item in items[: args.limit or None]:
-        sku = upsert_seller_home_sku(args.url, item)
-        if not sku:
-            continue
-        discovered += 1
-        upsert_seed_sku(sku, source=f"seller_home:{args.url}")
-        result = process_sku(sku, maozi, browser, source=f"seller_home:{args.url}")
-        processed += 1
-        if result["qualified"]:
-            qualified += 1
-            total_seller_offers += result["seller_offer_count"]
-        else:
-            rejected += 1
-        print(
-            sku,
-            "qualified" if result["qualified"] else "rejected",
-            "| maozi=",
-            result["maozi_source"],
-            "| offers=",
-            result["seller_offer_count"],
-            "|",
-            result["rule_reason"],
-        )
-    print(
-        "crawl summary:",
-        f"discovered={discovered}",
-        f"processed={processed}",
-        f"qualified={qualified}",
-        f"rejected={rejected}",
-        f"seller_offers={total_seller_offers}",
-    )
 
 
 def run_seller_network(
@@ -216,10 +286,15 @@ def run_seller_network(
     max_sellers: int,
     sku_limit: int,
     max_scrolls: int,
+    seller_sku_workers: int,
 ) -> dict[str, int]:
     max_sellers = max_sellers if max_sellers > 0 else 1000000
+    unlimited_depth = max_depth < 0
     max_depth = max_depth if max_depth >= 0 else 0
     sku_limit = sku_limit if sku_limit > 0 else 0
+    seller_sku_workers = normalize_worker_count(seller_sku_workers, settings.seller_sku_workers)
+    if not browser.cdp_url:
+        seller_sku_workers = 1
     seen_urls: set[str] = set()
     processed_sellers = 0
     skipped_recent = 0
@@ -227,7 +302,20 @@ def run_seller_network(
     total_skus = 0
     qualified_skus = 0
     rejected_skus = 0
+    deferred_skus = 0
     stored_offer_rows = 0
+    vlog(
+        "run_seller_network start:",
+        {
+            "initial_queue": len(queue),
+            "max_depth": max_depth,
+            "unlimited_depth": unlimited_depth,
+            "max_sellers": max_sellers,
+            "sku_limit": sku_limit,
+            "seller_sku_workers": seller_sku_workers,
+        },
+        prefix="seller",
+    )
 
     while queue and processed_sellers < max_sellers:
         seller = queue.popleft()
@@ -238,7 +326,7 @@ def run_seller_network(
         if normalized_url in seen_urls:
             continue
         seen_urls.add(normalized_url)
-        if depth > max_depth:
+        if not unlimited_depth and depth > max_depth:
             continue
 
         key = upsert_seller_shop(url, name=name)
@@ -253,33 +341,196 @@ def run_seller_network(
             )
             continue
 
-        result = browser.seller_home_products(url, max_scrolls=max_scrolls)
-        items = result.get("items") or []
-        source = result.get("source") or "unknown"
-        print(
-            "crawl seller:",
-            url,
-            "| depth=",
-            depth,
-            "| source=",
-            source,
-            "| items=",
-            len(items),
-        )
+        try:
+            result = browser.seller_home_products(url, max_scrolls=max_scrolls)
+            items = result.get("items") or []
+            source = result.get("source") or "unknown"
+            vlog(
+                "seller page detail:",
+                {
+                    "url": url,
+                    "depth": depth,
+                    "source": source,
+                    "items": len(items),
+                    "pages_fetched": result.get("pages_fetched"),
+                    "next_page": result.get("next_page"),
+                },
+                prefix="seller",
+            )
+            print(
+                "crawl seller:",
+                url,
+                "| depth=",
+                depth,
+                "| source=",
+                source,
+                "| items=",
+                len(items),
+            )
+        except Exception as exc:
+            detail = summarize_exception(exc)
+            print(
+                "skip seller (load failed):",
+                url,
+                "| error=",
+                detail or str(exc)[:120],
+            )
+            vlog(
+                "seller page load failed, skipping:",
+                {"url": url, "error": detail or str(exc)},
+                prefix="seller",
+            )
+            mark_seller_collected(key)
+            processed_sellers += 1
+            continue
 
         seller_offer_urls: dict[str, dict[str, Any]] = {}
         seller_skus = 0
         seller_qualified = 0
         seller_rejected = 0
+        seller_deferred = 0
+        seller_skipped = 0
         seller_offer_rows = 0
-        for item in items[: sku_limit or None]:
-            sku = upsert_seller_home_sku(url, item)
-            if not sku:
+        selected_items = items[: sku_limit or None]
+        prepared_items: list[tuple[str, dict[str, Any]]] = []
+        home_rows_saved = 0
+        for item in selected_items:
+            try:
+                sku = upsert_seller_home_sku(url, item)
+            except Exception as exc:
+                vlog("seller-home sku upsert failed:", f"seller={url}", f"error={exc}", prefix="seller")
+                print("DEBUG: upsert_seller_home_sku failed:", exc)
                 continue
+            if not sku:
+                print("DEBUG: upsert_seller_home_sku returned empty sku for item:", item.get("title"))
+                continue
+            try:
+                upsert_seed_sku(sku, source=f"seller_home:{url}")
+            except Exception as exc:
+                vlog("seed_sku upsert failed:", f"sku={sku}", f"error={exc}", prefix="seller")
+                print("DEBUG: seed_sku upsert failed:", exc)
+            prepared_items.append((sku, item))
+            home_rows_saved += 1
+        if prepared_items:
+            print(
+                "seller home skus prepared:",
+                f"seller={url}",
+                f"raw_items={len(items)}",
+                f"selected={len(selected_items)}",
+                f"saved={home_rows_saved}",
+            )
+
+        seller_prefetched_maozi: dict[str, tuple[dict[str, Any], str]] = {}
+        seller_batch_prefetch_failed = False
+        if prepared_items and browser.cdp_url:
+            try:
+                seller_prefetched_maozi = prefetch_top_list_maozi_batch(
+                    [sku for sku, _ in prepared_items],
+                    browser=browser,
+                )
+                vlog(
+                    "seller-home batch sku3 prefetched:",
+                    f"seller={url}",
+                    f"requested={len(prepared_items)}",
+                    f"succeeded={len(seller_prefetched_maozi)}",
+                    prefix="seller",
+                )
+            except Exception as exc:
+                seller_batch_prefetch_failed = True
+                vlog("seller-home batch sku3 prefetch failed:", f"seller={url}", exc, prefix="seller")
+
+        if prepared_items and (not browser.cdp_url or seller_batch_prefetch_failed or not seller_prefetched_maozi):
+            reason = "batch sku3 unavailable"
+            if not browser.cdp_url:
+                reason = "batch sku3 requires CDP browser"
+            elif seller_batch_prefetch_failed:
+                reason = "batch sku3 request failed"
+            print(
+                "skip seller:",
+                url,
+                "| reason=",
+                reason,
+                "| requested=",
+                len(prepared_items),
+            )
+            vlog(
+                "seller-home batch-only skip seller:",
+                {
+                    "seller": url,
+                    "reason": reason,
+                    "requested": len(prepared_items),
+                },
+                prefix="seller",
+            )
+            continue
+
+        def process_seller_home_item(entry: tuple[str, dict[str, Any]]) -> dict[str, Any] | None:
+            sku, item = entry
+            prefetched = seller_prefetched_maozi.get(sku)
+            product_snapshot_override = {
+                "product_url": item.get("href") or item.get("product_url"),
+                "title": item.get("title"),
+                "price": item.get("price_amount"),
+                "currency": item.get("currency"),
+                "main_image_url": item.get("image_url") or item.get("main_image_url"),
+                "raw": {"seller_home": item},
+            }
+            if prefetched is None:
+                try:
+                    upsert_sku_universe(
+                        sku,
+                        product_data=product_snapshot_override,
+                    )
+                except Exception as exc:
+                    vlog("sku_universe upsert failed:", f"sku={sku}", f"error={exc}", prefix="seller")
+                return {
+                    "sku": sku,
+                    "sku_result": {
+                        "qualified": False,
+                        "batch_skipped": True,
+                        "rule_reason": "卖家页批量 sku3 未返回，已跳过单 SKU 补抓",
+                        "seller_offer_count": None,
+                        "offers": [],
+                        "maozi_source": "seller_batch_miss",
+                    },
+                }
+            sku_result = process_sku(
+                sku,
+                maozi,
+                browser,
+                source=f"seller_home:{url}",
+                product_snapshot_override=product_snapshot_override,
+                prefetched_maozi=prefetched,
+                batch_only_mode=True,
+            )
+            return {"sku": sku, "sku_result": sku_result}
+
+        def consume_seller_home_result(item_result: dict[str, Any] | None) -> None:
+            nonlocal seller_skus, total_skus, seller_qualified, qualified_skus
+            nonlocal seller_rejected, rejected_skus, seller_deferred, deferred_skus, seller_skipped, seller_offer_rows, stored_offer_rows
+            if not item_result:
+                return
+            sku = item_result["sku"]
+            sku_result = item_result["sku_result"]
             seller_skus += 1
             total_skus += 1
-            upsert_seed_sku(sku, source=f"seller_home:{url}")
-            sku_result = process_sku(sku, maozi, browser, source=f"seller_home:{url}")
+            if sku_result.get("batch_skipped"):
+                seller_skipped += 1
+                print(
+                    "  sku:",
+                    sku,
+                    "| skipped | offers=",
+                    sku_result["seller_offer_count"],
+                    "|",
+                    sku_result["rule_reason"],
+                )
+                return
+            if sku_result.get("transient_failed"):
+                seller_deferred += 1
+                deferred_skus += 1
+                if needs_manual_intervention(sku_result["rule_reason"]):
+                    raise ManualInterventionRequired(sku_result["rule_reason"])
+                return
             if sku_result["qualified"]:
                 seller_qualified += 1
                 qualified_skus += 1
@@ -298,16 +549,24 @@ def run_seller_network(
             else:
                 seller_rejected += 1
                 rejected_skus += 1
-            print(
-                "  sku:",
-                sku,
-                "|",
-                "qualified" if sku_result["qualified"] else "rejected",
-                "| offers=",
-                sku_result["seller_offer_count"],
-                "|",
-                sku_result["rule_reason"],
-            )
+            if sku_result["qualified"]:
+                print(
+                    "  qualified sku:",
+                    sku,
+                    "| offers=",
+                    sku_result["seller_offer_count"],
+                    "|",
+                    sku_result["rule_reason"],
+                )
+
+        if seller_sku_workers <= 1 or len(prepared_items) <= 1:
+            for entry in prepared_items:
+                consume_seller_home_result(process_seller_home_item(entry))
+        else:
+            with ThreadPoolExecutor(max_workers=seller_sku_workers) as executor:
+                futures = [executor.submit(process_seller_home_item, entry) for entry in prepared_items]
+                for future in as_completed(futures):
+                    consume_seller_home_result(future.result())
 
         mark_seller_collected(key)
         processed_sellers += 1
@@ -316,16 +575,19 @@ def run_seller_network(
             f"skus={seller_skus}",
             f"qualified={seller_qualified}",
             f"rejected={seller_rejected}",
+            f"deferred={seller_deferred}",
+            f"skipped={seller_skipped}",
             f"offers={seller_offer_rows}",
         )
 
-        if depth < max_depth:
+        if unlimited_depth or depth < max_depth:
             for next_seller in seller_offer_urls.values():
                 next_url = next_seller["url"].rstrip("/")
                 if next_url in seen_urls:
                     continue
                 queue.append(next_seller)
                 discovered_sellers += 1
+                upsert_seller_shop(next_url, name=next_seller.get("name"))
 
     return {
         "processed_sellers": processed_sellers,
@@ -334,22 +596,499 @@ def run_seller_network(
         "total_skus": total_skus,
         "qualified_skus": qualified_skus,
         "rejected_skus": rejected_skus,
+        "deferred_skus": deferred_skus,
+        "skipped_skus": 0,
         "seller_offers": stored_offer_rows,
+    }
+
+
+def due_seed_pool_items(
+    *,
+    query_key: str | None = None,
+    source_type: str = "top_list",
+    process_limit: int = 0,
+    retry_failed_now: bool = False,
+    retry_deferred_now: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    query_limit = max(settings.seed_pool_query_limit, process_limit if process_limit > 0 else 0)
+    cached_items = list_seed_pool_skus(query_key=query_key, source_type=source_type, limit=query_limit)
+    due_items: list[dict[str, Any]] = []
+    for item in cached_items:
+        status = item.get("last_process_status") or "pending"
+        if retry_failed_now and status == "failed":
+            item["_due_reason"] = "failed_retry_forced"
+            due_items.append(item)
+            continue
+        if retry_deferred_now and status == "deferred":
+            item["_due_reason"] = "deferred_retry_forced"
+            due_items.append(item)
+            continue
+        due, due_reason = seed_pool_sku_due_state(item)
+        if due:
+            item["_due_reason"] = due_reason
+            due_items.append(item)
+    if process_limit > 0:
+        due_items = due_items[:process_limit]
+    return cached_items, due_items
+
+
+def print_browser_runtime_notice(browser: BrowserOzonClient) -> None:
+    if browser.cdp_url:
+        print(
+            "browser mode:",
+            f"attach_existing_cdp={browser.cdp_url}",
+            "| this command will reuse your manually started browser and will not open a new window",
+        )
+        if is_verbose():
+            try:
+                vlog("browser describe:", browser.describe(), prefix="runtime")
+                vlog("cdp ping:", browser.ping_cdp(), prefix="runtime")
+            except Exception as exc:
+                vlog("cdp ping failed during runtime notice:", exc, prefix="runtime")
+        return
+    print("browser mode: launch_own_context | no CDP browser configured; Playwright will launch its own context")
+
+
+def preflight_seed_pool_maozi_access(
+    due_items: list[dict[str, Any]],
+    *,
+    browser: BrowserOzonClient,
+    maozi: MaoziClient,
+) -> dict[str, tuple[dict[str, Any], str]]:
+    if not due_items:
+        return {}
+
+    probe_sku = str(due_items[0]["sku"])
+    vlog("preflight start:", f"probe_sku={probe_sku}", f"due_items={len(due_items)}", prefix="preflight")
+    if browser.cdp_url:
+        while True:
+            try:
+                browser.ping_cdp()
+                response, source = load_top_list_maozi_sku3(probe_sku, maozi, browser)
+                print("browser preflight:", f"sku={probe_sku}", f"maozi_source={source}", "status=ok")
+                if is_verbose():
+                    metric = parse_sku3_response(probe_sku, response)
+                    vlog(
+                        "preflight metric:",
+                        {
+                            "sold_count": metric.get("sold_count"),
+                            "sales_schema": metric.get("sales_schema"),
+                            "status_update_sales": metric.get("status_update_sales"),
+                            "status_update_variant": metric.get("status_update_variant"),
+                            "brand": metric.get("brand"),
+                        },
+                        prefix="preflight",
+                    )
+                return {probe_sku: (response, source)}
+            except Exception as exc:
+                print("browser preflight failed:", exc)
+                print(
+                    "manual action required: keep the current browser window open, confirm Ozon and Maozi are logged in, "
+                    "then press Enter to retry. Press Ctrl+C to stop this run."
+                )
+                input()
+
+    try:
+        response, source = load_top_list_maozi_sku3(probe_sku, maozi, browser)
+    except Exception as exc:
+        raise RuntimeError(
+            "seed-pool preflight failed before processing the first SKU. Please confirm the browser context can reach "
+            "Ozon and Maozi, then rerun."
+        ) from exc
+    print("browser preflight:", f"sku={probe_sku}", f"maozi_source={source}", "status=ok")
+    return {probe_sku: (response, source)}
+
+
+def normalize_worker_count(value: int | None, default: int = 1) -> int:
+    try:
+        parsed = int(value if value is not None else default)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, parsed)
+
+
+def create_worker_resource_pool(
+    base_browser: BrowserOzonClient,
+    base_maozi: MaoziClient,
+):
+    state = local()
+    created_browsers: list[BrowserOzonClient] = []
+    created_lock = Lock()
+
+    def acquire() -> tuple[BrowserOzonClient, MaoziClient]:
+        browser = getattr(state, "browser", None)
+        if browser is None:
+            browser = base_browser.clone()
+            browser.open_session()
+            state.browser = browser
+            vlog("worker browser opened", f"worker_state={id(state)}", prefix="worker")
+            with created_lock:
+                created_browsers.append(browser)
+        maozi = getattr(state, "maozi", None)
+        if maozi is None:
+            maozi = MaoziClient(token=base_maozi.token)
+            state.maozi = maozi
+            vlog("worker maozi client created", f"worker_state={id(state)}", prefix="worker")
+        return browser, maozi
+
+    def close_all() -> None:
+        seen: set[int] = set()
+        for browser in created_browsers:
+            key = id(browser)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                browser.close_session()
+                vlog("worker browser closed", f"browser_id={key}", prefix="worker")
+            except Exception:
+                pass
+
+    return acquire, close_all
+
+
+def expand_seed_pool_items(
+    due_items: list[dict[str, Any]],
+    *,
+    browser: BrowserOzonClient,
+    maozi: MaoziClient,
+    source_type: str,
+    max_depth: int,
+    max_sellers: int,
+    sku_limit: int,
+    max_scrolls: int,
+    seed_sku_workers: int,
+    seller_sku_workers: int,
+    prefetched_maozi: dict[str, tuple[dict[str, Any], str]] | None = None,
+) -> dict[str, Any]:
+    processed_skus = 0
+    qualified_skus = 0
+    rejected_skus = 0
+    prefiltered_skus = 0
+    seller_offer_rows = 0
+    pending_sellers: dict[str, dict[str, Any]] = {}
+    strict_seed_inserts = 0
+    failed_skus = 0
+    deferred_seed_skus = 0
+    reused_duplicate_rows = 0
+    unique_skus: set[str] = set()
+    cached_results: dict[str, dict[str, Any]] = {}
+    seller_stats = {
+        "processed_sellers": 0,
+        "skipped_recent": 0,
+        "queued_sellers": 0,
+        "total_skus": 0,
+        "qualified_skus": 0,
+        "rejected_skus": 0,
+        "deferred_skus": 0,
+        "seller_offers": 0,
+    }
+    remaining_seller_budget = max_sellers if max_sellers > 0 else -1
+    prefetched_maozi = dict(prefetched_maozi or {})
+    seed_sku_workers = normalize_worker_count(seed_sku_workers, settings.seed_sku_workers)
+    if not browser.cdp_url:
+        seed_sku_workers = 1
+    vlog(
+        "expand_seed_pool_items config:",
+        {
+            "due_rows": len(due_items),
+            "source_type": source_type,
+            "max_depth": max_depth,
+            "max_sellers": max_sellers,
+            "sku_limit": sku_limit,
+            "seed_sku_workers": seed_sku_workers,
+            "seller_sku_workers": seller_sku_workers,
+        },
+        prefix="expand",
+    )
+
+    def flush_pending_sellers() -> None:
+        nonlocal remaining_seller_budget
+        if not pending_sellers:
+            vlog("flush_pending_sellers skipped: empty queue", prefix="expand")
+            return
+        if remaining_seller_budget == 0:
+            vlog("flush_pending_sellers skipped: seller budget exhausted", prefix="expand")
+            return
+        if not (max_depth < 0 or max_depth >= 1):
+            pending_sellers.clear()
+            vlog("flush_pending_sellers cleared: max_depth prevented expansion", prefix="expand")
+            return
+        batch = list(pending_sellers.values())
+        pending_sellers.clear()
+        seller_stats["queued_sellers"] += len(batch)
+        vlog(
+            "flush_pending_sellers start:",
+            f"batch={len(batch)}",
+            f"remaining_budget={remaining_seller_budget}",
+            prefix="expand",
+        )
+        batch_stats = run_seller_network(
+            deque(batch),
+            browser=browser,
+            maozi=maozi,
+            max_depth=max_depth,
+            max_sellers=remaining_seller_budget,
+            sku_limit=sku_limit,
+            max_scrolls=max_scrolls,
+            seller_sku_workers=seller_sku_workers,
+        )
+        for key in seller_stats:
+            if key == "queued_sellers":
+                continue
+            seller_stats[key] += batch_stats[key]
+        if remaining_seller_budget > 0:
+            remaining_seller_budget = max(0, remaining_seller_budget - batch_stats["processed_sellers"])
+    grouped_items: dict[str, list[dict[str, Any]]] = {}
+    for item in due_items:
+        sku = str(item["sku"])
+        unique_skus.add(sku)
+        grouped_items.setdefault(sku, []).append(item)
+        mark_seed_pool_selected(str(item["query_key"]), sku, source_type=source_type)
+    vlog(
+        "seed pool grouped:",
+        f"unique_skus={len(grouped_items)}",
+        f"due_rows={len(due_items)}",
+        prefix="expand",
+    )
+
+    reused_duplicate_rows = sum(max(0, len(rows) - 1) for rows in grouped_items.values())
+    work_items: list[tuple[str, dict[str, Any], list[dict[str, Any]], tuple[dict[str, Any], str] | None]] = []
+
+    for sku, rows in grouped_items.items():
+        item = rows[0]
+        prefilter = evaluate_top_list_prefilter(item, rule=TOP_LIST_SEED_RULE)
+        vlog(
+            "seed prefilter result:",
+            f"sku={sku}",
+            f"matched={prefilter.matched}",
+            f"summary={prefilter.summary}",
+            prefix="seed",
+        )
+        if not prefilter.matched:
+            prefiltered_skus += 1
+            rejected_skus += 1
+            reason = f"种子预筛未命中: {prefilter.summary}"
+            for row in rows:
+                mark_seed_pool_processed(
+                    str(row["query_key"]),
+                    sku,
+                    status="rejected",
+                    snapshot_hash=row.get("snapshot_hash"),
+                    reason=reason,
+                    source_type=source_type,
+                )
+            print(
+                "seed sku:",
+                sku,
+                "| prefiltered-rejected |",
+                item.get("_due_reason"),
+                "|",
+                prefilter.summary,
+            )
+            continue
+        work_items.append((sku, item, rows, prefetched_maozi.pop(sku, None)))
+
+    if work_items and browser.cdp_url:
+        batch_targets = [sku for sku, _, _, prefetch in work_items if prefetch is None]
+        if batch_targets:
+            try:
+                batch_prefetched = prefetch_top_list_maozi_batch(
+                    batch_targets,
+                    browser=browser,
+                )
+                hydrated_work_items: list[tuple[str, dict[str, Any], list[dict[str, Any]], tuple[dict[str, Any], str] | None]] = []
+                for sku, item, rows, prefetch in work_items:
+                    hydrated_work_items.append((sku, item, rows, prefetch or batch_prefetched.get(sku)))
+                work_items = hydrated_work_items
+            except Exception as exc:
+                vlog("top-list batch prefetch failed:", exc, prefix="top-list")
+
+    worker_acquire = None
+    worker_close = None
+    if work_items and seed_sku_workers > 1:
+        worker_acquire, worker_close = create_worker_resource_pool(browser, maozi)
+
+    def process_seed_item(
+        sku: str,
+        item: dict[str, Any],
+        rows: list[dict[str, Any]],
+        prefetch: tuple[dict[str, Any], str] | None,
+    ) -> dict[str, Any]:
+        worker_browser = browser
+        worker_maozi = maozi
+        if worker_acquire is not None:
+            worker_browser, worker_maozi = worker_acquire()
+        try:
+            start = datetime.now()
+            vlog("seed worker start:", f"sku={sku}", f"due={item.get('_due_reason')}", prefix="seed")
+            sku_result = process_top_list_sku(
+                sku,
+                item,
+                worker_maozi,
+                worker_browser,
+                prefetched_maozi=prefetch,
+            )
+            elapsed_ms = int((datetime.now() - start).total_seconds() * 1000)
+            vlog(
+                "seed worker finish:",
+                f"sku={sku}",
+                f"qualified={sku_result.get('qualified')}",
+                f"strict_qualified={sku_result.get('strict_qualified')}",
+                f"offers={sku_result.get('seller_offer_count')}",
+                f"maozi_source={sku_result.get('maozi_source')}",
+                f"elapsed_ms={elapsed_ms}",
+                prefix="seed",
+            )
+            return {"sku": sku, "rows": rows, "item": item, "sku_result": sku_result}
+        except Exception as exc:
+            vlog("seed worker exception:", f"sku={sku}", exc, prefix="seed")
+            return {"sku": sku, "rows": rows, "item": item, "error": exc}
+
+    def consume_seed_item_result(result: dict[str, Any]) -> None:
+        nonlocal processed_skus, qualified_skus, rejected_skus, failed_skus, deferred_seed_skus
+        nonlocal strict_seed_inserts, seller_offer_rows
+        sku = result["sku"]
+        rows = result["rows"]
+        item = result["item"]
+        if result.get("error") is not None:
+            failed_skus += 1
+            error = result["error"]
+            reason = f"种子处理失败: {error}"
+            for row in rows:
+                mark_seed_pool_processed(
+                    str(row["query_key"]),
+                    sku,
+                    status="failed",
+                    snapshot_hash=row.get("snapshot_hash"),
+                    reason=reason,
+                    source_type=source_type,
+                )
+            if needs_manual_intervention(reason):
+                raise ManualInterventionRequired(reason)
+            print("seed sku:", sku, "| failed |", error)
+            return
+
+        sku_result = result["sku_result"]
+        if sku_result.get("transient_failed"):
+            deferred_seed_skus += 1
+            reason = sku_result["rule_reason"]
+            for row in rows:
+                mark_seed_pool_processed(
+                    str(row["query_key"]),
+                    sku,
+                    status="deferred",
+                    snapshot_hash=row.get("snapshot_hash"),
+                    reason=reason,
+                    seller_offer_count=sku_result["seller_offer_count"] or None,
+                    source_type=source_type,
+                )
+            if needs_manual_intervention(reason):
+                raise ManualInterventionRequired(reason)
+            print(
+                "seed sku:",
+                sku,
+                "| deferred | due=",
+                item.get("_due_reason"),
+                "| offers=",
+                sku_result["seller_offer_count"],
+                "|",
+                reason,
+            )
+            return
+        processed_skus += 1
+        if sku_result["qualified"]:
+            qualified_skus += 1
+            offers = sku_result.get("offers") or []
+            seller_offer_rows += len(offers)
+            for offer in offers:
+                home_url = (offer.get("seller_home_url") or "").strip()
+                if not home_url:
+                    continue
+                pending_sellers[home_url.rstrip("/")] = {
+                    "url": home_url,
+                    "name": offer.get("name"),
+                    "depth": 1,
+                }
+            status = "expanded"
+        else:
+            rejected_skus += 1
+            status = "rejected"
+
+        if sku_result.get("strict_qualified"):
+            strict_seed_inserts += 1
+
+        for row in rows:
+            mark_seed_pool_processed(
+                str(row["query_key"]),
+                sku,
+                status=status,
+                snapshot_hash=row.get("snapshot_hash"),
+                reason=sku_result["rule_reason"],
+                seller_offer_count=sku_result["seller_offer_count"] or None,
+                source_type=source_type,
+            )
+        print(
+            "seed sku:",
+            sku,
+            "|",
+            status,
+            "| due=",
+            item.get("_due_reason"),
+            "| offers=",
+            sku_result["seller_offer_count"],
+            "|",
+            sku_result["rule_reason"],
+        )
+
+    try:
+        if worker_acquire is None:
+            for sku, item, rows, prefetch in work_items:
+                consume_seed_item_result(process_seed_item(sku, item, rows, prefetch))
+        else:
+            with ThreadPoolExecutor(max_workers=seed_sku_workers) as executor:
+                futures = [
+                    executor.submit(process_seed_item, sku, item, rows, prefetch)
+                    for sku, item, rows, prefetch in work_items
+                ]
+                for future in as_completed(futures):
+                    consume_seed_item_result(future.result())
+    finally:
+        if worker_close is not None:
+            worker_close()
+
+    flush_pending_sellers()
+
+    return {
+        "due_rows": len(due_items),
+        "unique_due_skus": len(unique_skus),
+        "processed_skus": processed_skus,
+        "qualified_skus": qualified_skus,
+        "rejected_skus": rejected_skus,
+        "prefiltered_skus": prefiltered_skus,
+        "failed_skus": failed_skus,
+        "deferred_seed_skus": deferred_seed_skus,
+        "strict_seed_inserts": strict_seed_inserts,
+        "seller_offer_rows": seller_offer_rows,
+        "reused_duplicate_rows": reused_duplicate_rows,
+        "seller_stats": seller_stats,
     }
 
 
 def cmd_crawl_seller_network(args: argparse.Namespace) -> None:
     browser = build_browser_client(args)
     maozi = MaoziClient()
-    stats = run_seller_network(
-        deque([{"url": args.url, "depth": 0, "name": args.name or None}]),
-        browser=browser,
-        maozi=maozi,
-        max_depth=args.max_depth,
-        max_sellers=args.max_sellers,
-        sku_limit=args.sku_limit,
-        max_scrolls=args.max_scrolls,
-    )
+    with browser.session():
+        stats = run_seller_network(
+            deque([{"url": args.url, "depth": 0, "name": args.name or None}]),
+            browser=browser,
+            maozi=maozi,
+            max_depth=args.max_depth,
+            max_sellers=args.max_sellers,
+            sku_limit=args.sku_limit,
+            max_scrolls=args.max_scrolls,
+            seller_sku_workers=args.seller_sku_workers,
+        )
     print(
         "network crawl summary:",
         f"processed_sellers={stats['processed_sellers']}",
@@ -358,13 +1097,188 @@ def cmd_crawl_seller_network(args: argparse.Namespace) -> None:
         f"total_skus={stats['total_skus']}",
         f"qualified_skus={stats['qualified_skus']}",
         f"rejected_skus={stats['rejected_skus']}",
+        f"deferred_skus={stats['deferred_skus']}",
         f"seller_offers={stats['seller_offers']}",
+    )
+
+
+def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
+    browser = build_browser_client(args)
+    maozi = MaoziClient()
+    print_browser_runtime_notice(browser)
+    retry_failed_now = args.retry_failed_now
+    retry_deferred_now = args.retry_deferred_now
+    while True:
+        cached_items, due_items = due_seed_pool_items(
+            query_key=args.query_key or None,
+            source_type=args.source_type,
+            process_limit=args.process_limit,
+            retry_failed_now=retry_failed_now,
+            retry_deferred_now=retry_deferred_now,
+        )
+        vlog(
+            "due items preview:",
+            [f"{item['sku']}:{item.get('_due_reason')}" for item in due_items[:10]],
+            prefix="expand",
+        )
+        print(
+            "seed-pool summary:",
+            f"source_type={args.source_type}",
+            f"query_key={args.query_key or '<all>'}",
+            f"cached_rows={len(cached_items)}",
+            f"due_rows={len(due_items)}",
+        )
+        try:
+            with browser.session():
+                prefetched_maozi = preflight_seed_pool_maozi_access(due_items, browser=browser, maozi=maozi)
+                stats = expand_seed_pool_items(
+                    due_items,
+                    browser=browser,
+                    maozi=maozi,
+                    source_type=args.source_type,
+                    max_depth=args.max_depth,
+                    max_sellers=args.max_sellers,
+                    sku_limit=args.sku_limit,
+                    max_scrolls=args.max_scrolls,
+                    seed_sku_workers=args.seed_sku_workers,
+                    seller_sku_workers=args.seller_sku_workers,
+                    prefetched_maozi=prefetched_maozi,
+                )
+            break
+        except ManualInterventionRequired as exc:
+            log_line("manual action required:", exc, prefix="manual")
+            log_line(
+                "the browser window will stay open; complete the challenge and press Enter to continue retrying due seeds.",
+                prefix="manual",
+            )
+            input()
+            retry_failed_now = True
+    seller_stats = stats["seller_stats"]
+    print(
+        "seed-pool expansion summary:",
+        f"due_rows={stats['due_rows']}",
+        f"unique_due_skus={stats['unique_due_skus']}",
+        f"prefiltered_skus={stats['prefiltered_skus']}",
+        f"processed_skus={stats['processed_skus']}",
+        f"expanded_seed_skus={stats['qualified_skus']}",
+        f"rejected_skus={stats['rejected_skus']}",
+        f"failed_skus={stats['failed_skus']}",
+        f"deferred_seed_skus={stats['deferred_seed_skus']}",
+        f"strict_seed_inserts={stats['strict_seed_inserts']}",
+        f"seed_offer_rows={stats['seller_offer_rows']}",
+        f"reused_duplicate_rows={stats['reused_duplicate_rows']}",
+        f"expanded_sellers={seller_stats['processed_sellers']}",
+        f"skipped_recent_sellers={seller_stats['skipped_recent']}",
+        f"expanded_seller_skus={seller_stats['total_skus']}",
+        f"expanded_seller_qualified_skus={seller_stats['qualified_skus']}",
+        f"expanded_seller_rejected_skus={seller_stats['rejected_skus']}",
+        f"expanded_seller_offer_rows={seller_stats['seller_offers']}",
+    )
+
+
+def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
+    browser = build_browser_client(args)
+    maozi = MaoziClient()
+    print_browser_runtime_notice(browser)
+
+    total_processed = 0
+    total_queued = 0
+    total_skus = 0
+    total_qualified = 0
+    total_rejected = 0
+    total_deferred = 0
+    total_offers = 0
+    round_no = 0
+
+    while True:
+        due_sellers = list_due_seller_shops(process_limit=args.process_limit)
+        vlog(
+            "seller backlog preview:",
+            [f"{item.get('seller_key')}:{item.get('home_url')}" for item in due_sellers[:10]],
+            prefix="seller-backlog",
+        )
+        print(
+            f"expand-network round {round_no + 1} due:",
+            f"fetched={len(due_sellers)}",
+            f"process_limit={args.process_limit}",
+        )
+        if not due_sellers:
+            print("expand-network complete: no more due seller pages to process")
+            break
+        queue = deque(
+            {
+                "url": str(item.get("home_url") or "").strip(),
+                "name": item.get("name"),
+                "depth": 0,
+            }
+            for item in due_sellers
+            if str(item.get("home_url") or "").strip()
+        )
+        if not queue:
+            print("expand-network empty after filtering invalid home_url rows")
+            break
+        try:
+            with browser.session():
+                stats = run_seller_network(
+                    queue,
+                    browser=browser,
+                    maozi=maozi,
+                    max_depth=args.max_depth,
+                    max_sellers=args.max_sellers,
+                    sku_limit=args.sku_limit,
+                    max_scrolls=args.max_scrolls,
+                    seller_sku_workers=args.seller_sku_workers,
+                )
+        except ManualInterventionRequired as exc:
+            log_line("manual action required:", exc, prefix="manual")
+            log_line(
+                "the browser window will stay open; complete the challenge and press Enter to continue retrying due sellers.",
+                prefix="manual",
+            )
+            input()
+            continue
+
+        round_no += 1
+        total_processed += stats["processed_sellers"]
+        total_queued += stats["queued_sellers"]
+        total_skus += stats["total_skus"]
+        total_qualified += stats["qualified_skus"]
+        total_rejected += stats["rejected_skus"]
+        total_deferred += stats["deferred_skus"]
+        total_offers += stats["seller_offers"]
+
+        print(
+            f"expand-network round {round_no} done:",
+            f"sellers={stats['processed_sellers']}",
+            f"queued={stats['queued_sellers']}",
+            f"skus={stats['total_skus']}",
+            f"qualified={stats['qualified_skus']}",
+            f"rejected={stats['rejected_skus']}",
+            f"deferred={stats['deferred_skus']}",
+            f"offers={stats['seller_offers']}",
+        )
+
+        if stats.get("queued_sellers", 0) == 0 and stats.get("processed_sellers", 0) == 0:
+            print("expand-network: no new sellers discovered in this round, stopping")
+            break
+
+    print(
+        "expand-network final summary:",
+        f"rounds={round_no}",
+        f"total_sellers_processed={total_processed}",
+        f"total_sellers_queued={total_queued}",
+        f"total_skus={total_skus}",
+        f"total_qualified={total_qualified}",
+        f"total_rejected={total_rejected}",
+        f"total_deferred={total_deferred}",
+        f"total_offers={total_offers}",
     )
 
 
 def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
     browser = build_browser_client(args)
     maozi = MaoziClient()
+    print_browser_runtime_notice(browser)
     filters = default_top_list_filters(args)
     query_key = top_list_query_key(filters)
     page_from = max(1, int(args.page_from))
@@ -383,200 +1297,111 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
     pages_fetched = 0
     items_fetched = 0
     try:
-        if cached_run:
-            print(
-                "reuse cached top-list snapshot:",
-                f"run_id={cached_run['id']}",
-                f"started_at={cached_run['started_at']}",
-                f"within_hours={refresh_hours}",
-            )
-        else:
-            for page_no in range(page_from, page_to + 1):
-                raw = browser.top_list_page(filters, page_no=page_no, page_size=page_size)
-                if not raw.get("ok"):
-                    raise RuntimeError(
-                        f"top-list request failed on page {page_no}: HTTP {raw.get('status')} {raw.get('text')}"
-                    )
-                body = raw.get("data") or {}
-                if body.get("code") != 1:
-                    raise RuntimeError(f"top-list API returned error on page {page_no}: {body}")
-                payload = body.get("data") or {}
-                items = payload.get("data") or []
-                if not items:
-                    break
-                for index, item in enumerate(items, start=1):
-                    upsert_top_list_item(query_key, run_id, page_no, index, item)
-                    upsert_seed_pool_item(query_key, run_id, page_no, index, item)
-                pages_fetched += 1
-                items_fetched += len(items)
+        with browser.session():
+            if cached_run:
                 print(
-                    "top-list page:",
-                    page_no,
-                    f"/ {payload.get('last_page') or '?'}",
-                    "| items=",
-                    len(items),
+                    "reuse cached top-list snapshot:",
+                    f"run_id={cached_run['id']}",
+                    f"started_at={cached_run['started_at']}",
+                    f"within_hours={refresh_hours}",
                 )
-                last_page = int(payload.get("last_page") or page_no)
-                if page_no >= last_page:
-                    break
+            else:
+                for page_no in range(page_from, page_to + 1):
+                    raw = browser.top_list_page(filters, page_no=page_no, page_size=page_size)
+                    if not raw.get("ok"):
+                        raise RuntimeError(
+                            f"top-list request failed on page {page_no}: HTTP {raw.get('status')} {raw.get('text')}"
+                        )
+                    body = raw.get("data") or {}
+                    if body.get("code") != 1:
+                        raise RuntimeError(f"top-list API returned error on page {page_no}: {body}")
+                    payload = body.get("data") or {}
+                    items = payload.get("data") or []
+                    if not items:
+                        break
+                    for index, item in enumerate(items, start=1):
+                        upsert_top_list_item(query_key, run_id, page_no, index, item)
+                        upsert_seed_pool_item(query_key, run_id, page_no, index, item)
+                    pages_fetched += 1
+                    items_fetched += len(items)
+                    print(
+                        "top-list page:",
+                        page_no,
+                        f"/ {payload.get('last_page') or '?'}",
+                        "| items=",
+                        len(items),
+                    )
+                    last_page = int(payload.get("last_page") or page_no)
+                    if page_no >= last_page:
+                        break
 
-        cached_items = list_seed_pool_skus(query_key)
-        due_items: list[dict[str, Any]] = []
-        for item in cached_items:
-            due, due_reason = seed_pool_sku_due_state(item)
-            if due:
-                item["_due_reason"] = due_reason
-                due_items.append(item)
-        if args.process_limit > 0:
-            due_items = due_items[: args.process_limit]
+            cached_items, due_items = due_seed_pool_items(
+                query_key=query_key,
+                source_type="top_list",
+                process_limit=args.process_limit,
+                retry_failed_now=args.retry_failed_now,
+                retry_deferred_now=args.retry_deferred_now,
+            )
 
-        print(
-            "top-list cache summary:",
-            f"query_key={query_key}",
-            f"cached_skus={len(cached_items)}",
-            f"due_skus={len(due_items)}",
-        )
+            print(
+                "top-list cache summary:",
+                f"query_key={query_key}",
+                f"cached_skus={len(cached_items)}",
+                f"due_skus={len(due_items)}",
+            )
 
-        if args.skip_process:
+            if args.skip_process:
+                finish_top_list_run(
+                    run_id,
+                    status="success",
+                    pages_fetched=pages_fetched,
+                    items_fetched=items_fetched,
+                    due_skus=len(due_items),
+                )
+                print("skip process enabled; only refreshed or reused top-list cache")
+                return
+
+            expansion_stats = expand_seed_pool_items(
+                due_items,
+                browser=browser,
+                maozi=maozi,
+                source_type="top_list",
+                max_depth=args.max_depth,
+                max_sellers=args.max_sellers,
+                sku_limit=args.sku_limit,
+                max_scrolls=args.max_scrolls,
+                seed_sku_workers=args.seed_sku_workers,
+                seller_sku_workers=args.seller_sku_workers,
+                prefetched_maozi=preflight_seed_pool_maozi_access(due_items, browser=browser, maozi=maozi),
+            )
+            seller_stats = expansion_stats["seller_stats"]
+
             finish_top_list_run(
                 run_id,
                 status="success",
                 pages_fetched=pages_fetched,
                 items_fetched=items_fetched,
                 due_skus=len(due_items),
-            )
-            print("skip process enabled; only refreshed or reused top-list cache")
-            return
-
-        processed_skus = 0
-        qualified_skus = 0
-        rejected_skus = 0
-        prefiltered_skus = 0
-        seller_offer_rows = 0
-        next_sellers: dict[str, dict[str, Any]] = {}
-        strict_seed_inserts = 0
-        failed_skus = 0
-        for item in due_items:
-            sku = str(item["sku"])
-            mark_seed_pool_selected(query_key, sku)
-            prefilter = evaluate_top_list_prefilter(item, rule=TOP_LIST_SEED_RULE)
-            if not prefilter.matched:
-                prefiltered_skus += 1
-                rejected_skus += 1
-                mark_seed_pool_processed(
-                    query_key,
-                    sku,
-                    status="rejected",
-                    snapshot_hash=item.get("snapshot_hash"),
-                    reason=f"种子预筛未命中: {prefilter.summary}",
-                )
-                print(
-                    "seed sku:",
-                    sku,
-                    "| prefiltered-rejected |",
-                    item.get("_due_reason"),
-                    "|",
-                    prefilter.summary,
-                )
-                continue
-            try:
-                sku_result = process_top_list_sku(sku, item, maozi, browser, source=f"top_list:{args.main_type}")
-            except Exception as exc:
-                failed_skus += 1
-                mark_seed_pool_processed(
-                    query_key,
-                    sku,
-                    status="failed",
-                    snapshot_hash=item.get("snapshot_hash"),
-                    reason=f"种子处理失败: {exc}",
-                )
-                print("seed sku:", sku, "| failed |", exc)
-                continue
-            processed_skus += 1
-            if sku_result["qualified"]:
-                qualified_skus += 1
-                offers = sku_result.get("offers") or []
-                seller_offer_rows += len(offers)
-                for offer in offers:
-                    home_url = (offer.get("seller_home_url") or "").strip()
-                    if not home_url:
-                        continue
-                    next_sellers[home_url.rstrip("/")] = {
-                        "url": home_url,
-                        "name": offer.get("name"),
-                        "depth": 1,
-                    }
-            else:
-                rejected_skus += 1
-            if sku_result.get("strict_qualified"):
-                strict_seed_inserts += 1
-
-            mark_seed_pool_processed(
-                query_key,
-                sku,
-                status="expanded" if sku_result["qualified"] else "rejected",
-                snapshot_hash=item.get("snapshot_hash"),
-                reason=sku_result["rule_reason"],
-                seller_offer_count=sku_result["seller_offer_count"] or None,
+                processed_skus=expansion_stats["processed_skus"] + expansion_stats["prefiltered_skus"],
+                qualified_skus=expansion_stats["qualified_skus"],
+                rejected_skus=expansion_stats["rejected_skus"],
+                seller_expansions=seller_stats["processed_sellers"],
             )
             print(
-                "seed sku:",
-                sku,
-                "|",
-                "expanded" if sku_result["qualified"] else "rejected",
-                "| due=",
-                item.get("_due_reason"),
-                "| offers=",
-                sku_result["seller_offer_count"],
-                "|",
-                sku_result["rule_reason"],
+                "top-list crawl summary:",
+                f"seed_pool_skus={len(cached_items)}",
+                f"due_skus={len(due_items)}",
+                f"prefiltered_skus={expansion_stats['prefiltered_skus']}",
+                f"processed_skus={expansion_stats['processed_skus']}",
+                f"expanded_seed_skus={expansion_stats['qualified_skus']}",
+                f"rejected_skus={expansion_stats['rejected_skus']}",
+                f"failed_skus={expansion_stats['failed_skus']}",
+                f"deferred_seed_skus={expansion_stats['deferred_seed_skus']}",
+                f"strict_seed_inserts={expansion_stats['strict_seed_inserts']}",
+                f"top_list_offer_rows={expansion_stats['seller_offer_rows']}",
+                f"expanded_sellers={seller_stats['processed_sellers']}",
+                f"expanded_seller_skus={seller_stats['total_skus']}",
             )
-
-        seller_stats = {
-            "processed_sellers": 0,
-            "skipped_recent": 0,
-            "queued_sellers": len(next_sellers),
-            "total_skus": 0,
-            "qualified_skus": 0,
-            "rejected_skus": 0,
-            "seller_offers": 0,
-        }
-        if next_sellers and args.max_depth >= 1 and args.max_sellers != 0:
-            seller_stats = run_seller_network(
-                deque(next_sellers.values()),
-                browser=browser,
-                maozi=maozi,
-                max_depth=args.max_depth,
-                max_sellers=args.max_sellers,
-                sku_limit=args.sku_limit,
-                max_scrolls=args.max_scrolls,
-            )
-
-        finish_top_list_run(
-            run_id,
-            status="success",
-            pages_fetched=pages_fetched,
-            items_fetched=items_fetched,
-            due_skus=len(due_items),
-            processed_skus=processed_skus + prefiltered_skus,
-            qualified_skus=qualified_skus,
-            rejected_skus=rejected_skus,
-            seller_expansions=seller_stats["processed_sellers"],
-        )
-        print(
-            "top-list crawl summary:",
-            f"seed_pool_skus={len(cached_items)}",
-            f"due_skus={len(due_items)}",
-            f"prefiltered_skus={prefiltered_skus}",
-            f"processed_skus={processed_skus}",
-            f"expanded_seed_skus={qualified_skus}",
-            f"rejected_skus={rejected_skus}",
-            f"failed_skus={failed_skus}",
-            f"strict_seed_inserts={strict_seed_inserts}",
-            f"top_list_offer_rows={seller_offer_rows}",
-            f"expanded_sellers={seller_stats['processed_sellers']}",
-            f"expanded_seller_skus={seller_stats['total_skus']}",
-        )
     except Exception as exc:
         finish_top_list_run(
             run_id,
@@ -595,16 +1420,6 @@ def cmd_show_browser_config(args: argparse.Namespace) -> None:
     for key, value in info.items():
         print(f"  {key}: {value}")
     print("tip: one browser profile directory should serve exactly one target Google/Ozon/plugin account set.")
-
-
-def cmd_warmup_browser(args: argparse.Namespace) -> None:
-    client = build_browser_client(args, headless_override=False)
-    info = client.describe()
-    print("warming up browser profile:")
-    for key, value in info.items():
-        print(f"  {key}: {value}")
-    print("open this profile and log into the exact target Google account, Ozon account, and plugin account.")
-    client.warmup(args.url)
 
 
 def cmd_launch_real_chrome(args: argparse.Namespace) -> None:
@@ -664,14 +1479,12 @@ def add_top_list_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--process-limit", type=int, default=0)
     parser.add_argument("--force-refresh", action="store_true")
     parser.add_argument("--skip-process", action="store_true")
+    parser.add_argument("--retry-failed-now", action="store_true")
 
 
 def load_seller_offers(sku: str, browser: BrowserOzonClient) -> list[dict[str, Any]]:
     if browser.cdp_url:
-        try:
-            return browser.seller_offers(sku)
-        except Exception:
-            pass
+        return browser.seller_offers(sku)
     try:
         return OzonFrontendClient().seller_offers(sku)
     except Exception:
@@ -682,17 +1495,100 @@ def load_maozi_sku3(sku: str, maozi: MaoziClient, browser: BrowserOzonClient, *,
     if prefer_direct:
         try:
             return maozi.sku3(sku), "direct_api"
-        except Exception:
-            return browser.maozi_sku3(sku), "extension_page"
+        except Exception as direct_exc:
+            try:
+                return browser.maozi_sku3(sku), "extension_page"
+            except Exception as browser_exc:
+                raise RuntimeError(
+                    f"direct api failed: {summarize_exception(direct_exc)}; "
+                    f"browser extension failed: {summarize_exception(browser_exc)}"
+                ) from browser_exc
     if browser.cdp_url:
-        try:
-            return browser.maozi_sku3(sku), "extension_page"
-        except Exception:
-            return maozi.sku3(sku), "direct_api"
+        return browser.maozi_sku3(sku), "extension_page"
     try:
         return maozi.sku3(sku), "direct_api"
-    except Exception:
-        return browser.maozi_sku3(sku), "extension_page"
+    except Exception as direct_exc:
+        try:
+            return browser.maozi_sku3(sku), "extension_page"
+        except Exception as browser_exc:
+            raise RuntimeError(
+                f"direct api failed: {summarize_exception(direct_exc)}; "
+                f"browser extension failed: {summarize_exception(browser_exc)}"
+            ) from browser_exc
+
+
+def load_top_list_maozi_sku3(sku: str, maozi: MaoziClient, browser: BrowserOzonClient) -> tuple[dict[str, Any], str]:
+    if browser.cdp_url:
+        try:
+            return browser.top_list_sku3(sku), "top_list_page"
+        except Exception as site_exc:
+            try:
+                return maozi.sku3(sku), "direct_api"
+            except Exception as direct_exc:
+                try:
+                    return browser.maozi_sku3(sku), "extension_page"
+                except Exception as browser_exc:
+                    raise RuntimeError(
+                        f"top-list page failed: {summarize_exception(site_exc)}; "
+                        f"direct api failed: {summarize_exception(direct_exc)}; "
+                        f"browser extension failed: {summarize_exception(browser_exc)}"
+                    ) from browser_exc
+    try:
+        return maozi.sku3(sku), "direct_api"
+    except Exception as direct_exc:
+        try:
+            return browser.top_list_sku3(sku), "top_list_page"
+        except Exception as site_exc:
+            try:
+                return browser.maozi_sku3(sku), "extension_page"
+            except Exception as browser_exc:
+                raise RuntimeError(
+                    f"direct api failed: {summarize_exception(direct_exc)}; "
+                    f"top-list page failed: {summarize_exception(site_exc)}; "
+                    f"browser extension failed: {summarize_exception(browser_exc)}"
+                ) from browser_exc
+
+
+def prefetch_top_list_maozi_batch(
+    skus: list[str],
+    *,
+    browser: BrowserOzonClient,
+    batch_size: int | None = None,
+    concurrency: int | None = None,
+) -> dict[str, tuple[dict[str, Any], str]]:
+    if not skus:
+        return {}
+    resolved_batch_size = max(1, int(batch_size or settings.top_list_sku3_batch_size))
+    resolved_concurrency = max(1, int(concurrency or settings.top_list_sku3_batch_concurrency))
+    prefetched: dict[str, tuple[dict[str, Any], str]] = {}
+    for index in range(0, len(skus), resolved_batch_size):
+        chunk = skus[index : index + resolved_batch_size]
+        start = datetime.now()
+        raw = browser.top_list_sku3_batch(chunk, concurrency=resolved_concurrency)
+        elapsed_ms = int((datetime.now() - start).total_seconds() * 1000)
+        for chunk_sku, response in raw.items():
+            prefetched[str(chunk_sku)] = (response, "top_list_batch")
+        vlog(
+            "top-list batch sku3:",
+            f"chunk_start={index}",
+            f"chunk_size={len(chunk)}",
+            f"succeeded={len(raw)}",
+            f"missing={len(chunk) - len(raw)}",
+            f"concurrency={resolved_concurrency}",
+            f"elapsed_ms={elapsed_ms}",
+            prefix="top-list",
+        )
+        next_chunk_start = index + resolved_batch_size
+        if next_chunk_start < len(skus) and settings.top_list_sku3_batch_chunk_delay_ms > 0:
+            delay_seconds = settings.top_list_sku3_batch_chunk_delay_ms / 1000.0
+            vlog(
+                "top-list batch sku3 chunk delay:",
+                f"delay_ms={settings.top_list_sku3_batch_chunk_delay_ms}",
+                f"next_chunk_start={next_chunk_start}",
+                prefix="top-list",
+            )
+            time.sleep(delay_seconds)
+    return prefetched
 
 
 def top_list_metric_overrides(item: dict[str, Any]) -> dict[str, Any]:
@@ -738,12 +1634,19 @@ def process_top_list_sku(
     top_item: dict[str, Any],
     maozi: MaoziClient,
     browser: BrowserOzonClient,
-    source: str,
+    prefetched_maozi: tuple[dict[str, Any], str] | None = None,
 ) -> dict[str, Any]:
-    try:
-        response, maozi_source = load_maozi_sku3(sku, maozi, browser, prefer_direct=True)
-    except Exception as exc:
-        raise RuntimeError(f"failed to fetch maozi sku3 for top-list sku {sku}") from exc
+    vlog("process_top_list_sku start:", f"sku={sku}", f"prefetched={prefetched_maozi is not None}", prefix="top-list")
+    if prefetched_maozi is None:
+        try:
+            response, maozi_source = load_top_list_maozi_sku3(sku, maozi, browser)
+        except Exception as exc:
+            detail = summarize_exception(exc)
+            if detail:
+                raise RuntimeError(f"failed to fetch maozi sku3 for top-list sku {sku}: {detail}") from exc
+            raise RuntimeError(f"failed to fetch maozi sku3 for top-list sku {sku}") from exc
+    else:
+        response, maozi_source = prefetched_maozi
 
     product_snapshot = top_list_product_snapshot(top_item)
     metric_overrides = top_list_metric_overrides(top_item)
@@ -751,9 +1654,30 @@ def process_top_list_sku(
     for key, value in metric_overrides.items():
         if value is not None and value != "":
             metric_preview[key] = value
+    vlog(
+        "top-list maozi parsed:",
+        {
+            "sku": sku,
+            "maozi_source": maozi_source,
+            "sold_count": metric_preview.get("sold_count"),
+            "brand": metric_preview.get("brand"),
+            "sales_schema": metric_preview.get("sales_schema"),
+            "status_update_sales": metric_preview.get("status_update_sales"),
+            "status_update_variant": metric_preview.get("status_update_variant"),
+        },
+        prefix="top-list",
+    )
 
     preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, None, rule=TOP_LIST_SEED_RULE)
     non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
+    vlog(
+        "top-list preview rule:",
+        f"sku={sku}",
+        f"matched={preview_rule.matched}",
+        f"summary={preview_rule.summary}",
+        f"non_offer_reasons={non_offer_reasons}",
+        prefix="top-list",
+    )
     plugin_card = None
     plugin_rescuable_reasons = {
         "月销量缺失",
@@ -761,7 +1685,10 @@ def process_top_list_sku(
         "退货取消率缺失",
         "发货模式不包含FBS",
     }
-    if non_offer_reasons and all(reason in plugin_rescuable_reasons for reason in non_offer_reasons):
+    # Seed expansion prioritizes throughput: we store the incomplete SKU in sku_universe first
+    # and defer slow plugin-card rescue to later targeted backfill / strict-flow checks.
+    should_try_plugin_rescue = False
+    if should_try_plugin_rescue:
         try:
             plugin_card = browser.plugin_card_snapshot(sku)
             merged_overrides = dict(metric_overrides)
@@ -778,36 +1705,125 @@ def process_top_list_sku(
 
     offers: list[dict[str, Any]] | None = None
     seller_offer_count: int | None = None
+    offer_fetch_error: Exception | None = None
     if not non_offer_reasons:
         try:
             offers = load_seller_offers(sku, browser)
             seller_offer_count = len(offers)
+            vlog("top-list offers fetched:", f"sku={sku}", f"offers={seller_offer_count}", prefix="top-list")
             preview_rule = evaluate_selection_rule(
                 metric_preview,
                 product_snapshot,
                 seller_offer_count,
                 rule=TOP_LIST_SEED_RULE,
             )
-        except Exception:
+        except Exception as exc:
             offers = None
+            offer_fetch_error = exc
+            vlog("top-list offers fetch failed:", f"sku={sku}", exc, prefix="top-list")
+
+    if seller_offer_count is None and not non_offer_reasons:
+        try:
+            if not plugin_card or (
+                not plugin_card.get("metric_overrides")
+                and plugin_card.get("seller_offer_count") is None
+            ):
+                plugin_card = browser.plugin_card_snapshot(sku)
+            for key, value in (plugin_card.get("metric_overrides") or {}).items():
+                if value is not None and value != "":
+                    metric_preview[key] = value
+            seller_offer_count = plugin_card.get("seller_offer_count")
+            vlog("top-list plugin-card rescue:", f"sku={sku}", f"seller_offer_count={seller_offer_count}", prefix="top-list")
+            preview_rule = evaluate_selection_rule(
+                metric_preview,
+                product_snapshot,
+                seller_offer_count,
+                rule=TOP_LIST_SEED_RULE,
+            )
+        except Exception as exc:
+            if offer_fetch_error is None:
+                offer_fetch_error = exc
 
     strict_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
+    defer_pending_refresh = should_defer_for_pending_refresh(metric_preview, preview_rule.reasons)
+    vlog(
+        "top-list final preview:",
+        {
+            "sku": sku,
+            "preview_summary": preview_rule.summary,
+            "strict_summary": strict_rule.summary,
+            "seller_offer_count": seller_offer_count,
+            "defer_pending_refresh": defer_pending_refresh,
+        },
+        prefix="top-list",
+    )
+    universe_formal_result = strict_rule
+    universe_seed_result = preview_rule
+    if (seller_offer_count is None and not non_offer_reasons) or defer_pending_refresh:
+        universe_formal_result = None
+        universe_seed_result = None
+    try:
+        upsert_sku_universe(
+            sku,
+            product_data=product_snapshot,
+            metric=metric_preview,
+            plugin_card=plugin_card,
+            offers=offers,
+            seller_offer_count=seller_offer_count,
+            formal_rule_result=universe_formal_result,
+            seed_rule_result=universe_seed_result,
+        )
+    except Exception as exc:
+        vlog("sku_universe upsert failed:", f"sku={sku}", f"error={exc}", prefix="seed")
+    if seller_offer_count is None and not non_offer_reasons:
+        reason = build_retry_reason("跟卖列表", offer_fetch_error)
+        mark_seed_status(sku, status="failed", reason=reason)
+        return {
+            "sku": sku,
+            "qualified": False,
+            "strict_qualified": False,
+            "transient_failed": True,
+            "rule_reason": reason,
+            "status_update_sales": metric_preview["status_update_sales"],
+            "status_update_variant": metric_preview["status_update_variant"],
+            "seller_offer_count": None,
+            "maozi_source": maozi_source,
+            "offers": [],
+        }
+    if defer_pending_refresh:
+        reason = "待重试: 毛子 sku3 返回待刷新状态(update_sales/update_variant)，关键字段尚未补齐"
+        mark_seed_status(sku, status="failed", reason=reason)
+        return {
+            "sku": sku,
+            "qualified": False,
+            "strict_qualified": False,
+            "transient_failed": True,
+            "rule_reason": reason,
+            "status_update_sales": metric_preview["status_update_sales"],
+            "status_update_variant": metric_preview["status_update_variant"],
+            "seller_offer_count": seller_offer_count,
+            "maozi_source": maozi_source,
+            "offers": offers or [],
+        }
     if preview_rule.matched and offers is not None:
         for offer in offers:
-            upsert_seller_offer(sku, offer)
-    if strict_rule.matched:
-        upsert_sku3_response(
-            sku,
-            response,
-            product_data=product_snapshot,
-            seller_offer_count=seller_offer_count,
-            metric_overrides=metric_overrides,
-            apply_selection_rule=True,
-        )
+            try:
+                upsert_seller_offer(sku, offer)
+            except Exception as exc:
+                vlog("seller_offer upsert failed:", f"sku={sku}", f"error={exc}", prefix="seed")
+    strict_metric = upsert_sku3_response(
+        sku,
+        response,
+        product_data=product_snapshot,
+        seller_offer_count=seller_offer_count,
+        metric_overrides=metric_overrides,
+        plugin_card=plugin_card,
+        apply_selection_rule=True,
+    )
     return {
         "sku": sku,
         "qualified": preview_rule.matched,
-        "strict_qualified": strict_rule.matched,
+        "strict_qualified": bool(strict_metric.get("qualified")),
         "rule_reason": preview_rule.summary,
         "status_update_sales": metric_preview["status_update_sales"],
         "status_update_variant": metric_preview["status_update_variant"],
@@ -817,9 +1833,23 @@ def process_top_list_sku(
     }
 
 
-def process_sku(sku: str, maozi: MaoziClient, browser: BrowserOzonClient, source: str) -> dict[str, Any]:
-    upsert_seed_sku(sku, source=source)
-    if browser.cdp_url:
+def process_sku(
+    sku: str,
+    maozi: MaoziClient,
+    browser: BrowserOzonClient,
+    source: str,
+    product_snapshot_override: dict[str, Any] | None = None,
+    prefetched_maozi: tuple[dict[str, Any], str] | None = None,
+    batch_only_mode: bool = False,
+) -> dict[str, Any]:
+    try:
+        upsert_seed_sku(sku, source=source)
+    except Exception as exc:
+        vlog("seed_sku upsert failed:", f"sku={sku}", f"error={exc}", prefix="sku")
+    vlog("process_sku start:", f"sku={sku}", f"source={source}", f"batch_only={batch_only_mode}", prefix="sku")
+    if prefetched_maozi is not None:
+        response, maozi_source = prefetched_maozi
+    elif browser.cdp_url:
         try:
             response = browser.maozi_sku3(sku)
             maozi_source = "extension_page"
@@ -828,9 +1858,11 @@ def process_sku(sku: str, maozi: MaoziClient, browser: BrowserOzonClient, source
                 response = maozi.sku3(sku)
                 maozi_source = "direct_api"
             except Exception as api_exc:
+                detail = summarize_exception(api_exc) or summarize_exception(browser_exc)
                 raise RuntimeError(
                     f"failed to fetch maozi sku3 for sku {sku}; "
                     "the extension popup is likely not logged in and direct API fallback was also rejected"
+                    + (f"; {detail}" if detail else "")
                 ) from api_exc
     else:
         maozi_source = "direct_api"
@@ -841,36 +1873,178 @@ def process_sku(sku: str, maozi: MaoziClient, browser: BrowserOzonClient, source
                 response = browser.maozi_sku3(sku)
                 maozi_source = "extension_page"
             except Exception as browser_exc:
+                detail = summarize_exception(browser_exc) or summarize_exception(api_exc)
                 raise RuntimeError(
                     f"failed to fetch maozi sku3 for sku {sku}; "
                     "direct API and browser-extension fallback both failed"
+                    + (f"; {detail}" if detail else "")
                 ) from browser_exc
-    product_snapshot = browser.product_snapshot(sku)
-    plugin_card = browser.plugin_card_snapshot(sku)
+    vlog("sku maozi source:", f"sku={sku}", f"maozi_source={maozi_source}", prefix="sku")
+    product_snapshot = product_snapshot_override or browser.product_snapshot(sku)
+    plugin_card: dict[str, Any] = {
+        "metric_overrides": {},
+        "seller_offer_count": None,
+        "line_map": None,
+        "card_lines": None,
+    }
     offers: list[dict[str, Any]] | None = None
-    seller_offer_count = plugin_card.get("seller_offer_count")
+    metric_preview = parse_sku3_response(sku, response)
+    seller_offer_count = None
+    preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
+    non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
+    vlog(
+        "sku preview parsed:",
+        {
+            "sku": sku,
+            "sold_count": metric_preview.get("sold_count"),
+            "brand": metric_preview.get("brand"),
+            "sales_schema": metric_preview.get("sales_schema"),
+            "status_update_sales": metric_preview.get("status_update_sales"),
+            "status_update_variant": metric_preview.get("status_update_variant"),
+            "preview_summary": preview_rule.summary,
+            "non_offer_reasons": non_offer_reasons,
+        },
+        prefix="sku",
+    )
+    offer_fetch_error: Exception | None = None
+    plugin_rescuable_reasons = {
+        "月销量缺失",
+        "重量(g)缺失",
+        "上架天数缺失",
+        "退货取消率缺失",
+        "发货模式不包含FBS",
+    }
+    should_try_plugin_rescue = (
+        not batch_only_mode
+        and
+        bool(non_offer_reasons)
+        and all(reason in plugin_rescuable_reasons for reason in non_offer_reasons)
+    )
+    if should_try_plugin_rescue:
+        try:
+            plugin_card = browser.plugin_card_snapshot(sku)
+            for key, value in (plugin_card.get("metric_overrides") or {}).items():
+                if value is not None and value != "":
+                    metric_preview[key] = value
+            seller_offer_count = plugin_card.get("seller_offer_count")
+            preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
+            non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
+            vlog(
+                "sku plugin rescue success:",
+                f"sku={sku}",
+                f"seller_offer_count={seller_offer_count}",
+                f"preview_summary={preview_rule.summary}",
+                prefix="sku",
+            )
+        except Exception:
+            plugin_card = {
+                "metric_overrides": {},
+                "seller_offer_count": None,
+                "line_map": None,
+                "card_lines": None,
+            }
+            seller_offer_count = None
+            preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
+            non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
+            vlog("sku plugin rescue failed:", f"sku={sku}", prefix="sku")
 
     raw_product = dict(product_snapshot.get("raw") or {})
-    raw_product["plugin_card"] = {
-        "line_map": plugin_card.get("line_map"),
-        "card_lines": plugin_card.get("card_lines"),
-    }
+    if plugin_card.get("line_map") or plugin_card.get("card_lines"):
+        raw_product["plugin_card"] = {
+            "line_map": plugin_card.get("line_map"),
+            "card_lines": plugin_card.get("card_lines"),
+        }
     product_snapshot["raw"] = raw_product
-    metric_preview = parse_sku3_response(sku, response)
-    for key, value in (plugin_card.get("metric_overrides") or {}).items():
-        if value is not None and value != "":
-            metric_preview[key] = value
-    preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
-    if not preview_rule.matched and seller_offer_count is None:
-        non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
+
+    if seller_offer_count is None:
         if not non_offer_reasons:
             try:
                 offers = load_seller_offers(sku, browser)
                 seller_offer_count = len(offers)
                 preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
-            except Exception:
+                vlog("sku offers fetched:", f"sku={sku}", f"offers={seller_offer_count}", prefix="sku")
+            except Exception as exc:
                 offers = None
+                offer_fetch_error = exc
+                vlog("sku offers fetch failed:", f"sku={sku}", exc, prefix="sku")
 
+    if seller_offer_count is None and not non_offer_reasons:
+        if batch_only_mode:
+            vlog("sku batch-only mode skipped plugin offers-count fallback:", f"sku={sku}", prefix="sku")
+        else:
+            try:
+                if not plugin_card.get("line_map") and not plugin_card.get("card_lines") and not plugin_card.get("metric_overrides"):
+                    plugin_card = browser.plugin_card_snapshot(sku)
+                for key, value in (plugin_card.get("metric_overrides") or {}).items():
+                    if value is not None and value != "":
+                        metric_preview[key] = value
+                seller_offer_count = plugin_card.get("seller_offer_count")
+                preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
+                vlog(
+                    "sku plugin fallback offers count:",
+                    f"sku={sku}",
+                    f"seller_offer_count={seller_offer_count}",
+                    f"preview_summary={preview_rule.summary}",
+                    prefix="sku",
+                )
+            except Exception as exc:
+                if offer_fetch_error is None:
+                    offer_fetch_error = exc
+                vlog("sku plugin fallback failed:", f"sku={sku}", exc, prefix="sku")
+
+    defer_pending_refresh = should_defer_for_pending_refresh(metric_preview, preview_rule.reasons)
+    vlog(
+        "sku final preview:",
+        {
+            "sku": sku,
+            "preview_summary": preview_rule.summary,
+            "seller_offer_count": seller_offer_count,
+            "defer_pending_refresh": defer_pending_refresh,
+        },
+        prefix="sku",
+    )
+    try:
+        upsert_sku_universe(
+            sku,
+            product_data=product_snapshot,
+            metric=metric_preview,
+            plugin_card=plugin_card,
+            offers=offers,
+            seller_offer_count=seller_offer_count,
+            formal_rule_result=None if ((seller_offer_count is None and not non_offer_reasons) or defer_pending_refresh) else preview_rule,
+        )
+    except Exception as exc:
+        vlog("sku_universe upsert failed:", f"sku={sku}", f"error={exc}", prefix="sku")
+    if seller_offer_count is None and not non_offer_reasons:
+        reason = build_retry_reason("跟卖列表", offer_fetch_error)
+        mark_seed_status(sku, status="failed", reason=reason)
+        return {
+            "sku": sku,
+            "qualified": False,
+            "strict_qualified": False,
+            "transient_failed": True,
+            "rule_reason": reason,
+            "status_update_sales": metric_preview["status_update_sales"],
+            "status_update_variant": metric_preview["status_update_variant"],
+            "seller_offer_count": None,
+            "maozi_source": maozi_source,
+            "offers": [],
+        }
+    if defer_pending_refresh:
+        reason = "待重试: 毛子 sku3 返回待刷新状态(update_sales/update_variant)，关键字段尚未补齐"
+        mark_seed_status(sku, status="failed", reason=reason)
+        return {
+            "sku": sku,
+            "qualified": False,
+            "strict_qualified": False,
+            "transient_failed": True,
+            "rule_reason": reason,
+            "status_update_sales": metric_preview["status_update_sales"],
+            "status_update_variant": metric_preview["status_update_variant"],
+            "seller_offer_count": seller_offer_count,
+            "maozi_source": maozi_source,
+            "offers": offers or [],
+        }
     if not preview_rule.matched:
         metric = upsert_sku3_response(
             sku,
@@ -878,6 +2052,7 @@ def process_sku(sku: str, maozi: MaoziClient, browser: BrowserOzonClient, source
             product_data=product_snapshot,
             seller_offer_count=seller_offer_count,
             metric_overrides=plugin_card.get("metric_overrides"),
+            plugin_card=plugin_card,
             apply_selection_rule=True,
         )
         return {
@@ -897,17 +2072,34 @@ def process_sku(sku: str, maozi: MaoziClient, browser: BrowserOzonClient, source
         except Exception:
             offers = None
 
+    try:
+        upsert_sku_universe(
+            sku,
+            product_data=product_snapshot,
+            metric=metric_preview,
+            plugin_card=plugin_card,
+            offers=offers,
+            seller_offer_count=seller_offer_count,
+            formal_rule_result=preview_rule,
+        )
+    except Exception as exc:
+        vlog("sku_universe upsert failed:", f"sku={sku}", f"error={exc}", prefix="sku")
+
     metric = upsert_sku3_response(
         sku,
         response,
         product_data=product_snapshot,
         seller_offer_count=seller_offer_count,
         metric_overrides=plugin_card.get("metric_overrides"),
+        plugin_card=plugin_card,
         apply_selection_rule=True,
     )
     if metric.get("qualified") and offers is not None:
         for offer in offers:
-            upsert_seller_offer(sku, offer)
+            try:
+                upsert_seller_offer(sku, offer)
+            except Exception as exc:
+                vlog("seller_offer upsert failed:", f"sku={sku}", f"error={exc}", prefix="sku")
     return {
         "sku": metric["sku"],
         "qualified": bool(metric.get("qualified")),
@@ -922,6 +2114,7 @@ def process_sku(sku: str, maozi: MaoziClient, browser: BrowserOzonClient, source
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ozon-pipeline")
+    parser.add_argument("--verbose", action="store_true", help="print detailed timestamped runtime logs")
     sub = parser.add_subparsers(required=True)
 
     migrate = sub.add_parser("migrate")
@@ -932,6 +2125,13 @@ def build_parser() -> argparse.ArgumentParser:
     import_seeds.add_argument("--source", default="manual")
     import_seeds.set_defaults(func=cmd_import_seeds)
 
+    repair_seed_pool_failures = sub.add_parser("repair-seed-pool-failures")
+    repair_seed_pool_failures.add_argument("--query-key", default="")
+    repair_seed_pool_failures.add_argument("--source-type", default="top_list")
+    repair_seed_pool_failures.add_argument("--all-failed", action="store_true")
+    repair_seed_pool_failures.add_argument("--offer-missing-rejections", action="store_true")
+    repair_seed_pool_failures.set_defaults(func=cmd_repair_seed_pool_failures)
+
     fetch_sku = sub.add_parser("fetch-sku")
     fetch_sku.add_argument("sku")
     add_browser_options(fetch_sku, include_headless=True)
@@ -939,12 +2139,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     fetch_offers = sub.add_parser("fetch-offers")
     fetch_offers.add_argument("sku")
+    add_browser_options(fetch_offers, include_headless=True)
     fetch_offers.set_defaults(func=cmd_fetch_offers)
-
-    fetch_offers_browser = sub.add_parser("fetch-offers-browser")
-    fetch_offers_browser.add_argument("sku")
-    add_browser_options(fetch_offers_browser, include_headless=True)
-    fetch_offers_browser.set_defaults(func=cmd_fetch_offers_browser)
 
     fetch_seller_home = sub.add_parser("fetch-seller-home")
     fetch_seller_home.add_argument("url")
@@ -953,13 +2149,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_browser_options(fetch_seller_home, include_headless=True)
     fetch_seller_home.set_defaults(func=cmd_fetch_seller_home)
 
-    crawl_seller = sub.add_parser("crawl-seller")
-    crawl_seller.add_argument("url")
-    crawl_seller.add_argument("--max-scrolls", type=int, default=8)
-    crawl_seller.add_argument("--limit", type=int, default=0)
-    add_browser_options(crawl_seller, include_headless=True)
-    crawl_seller.set_defaults(func=cmd_crawl_seller)
-
     crawl_seller_network = sub.add_parser("crawl-seller-network")
     crawl_seller_network.add_argument("url")
     crawl_seller_network.add_argument("--name", default=None)
@@ -967,8 +2156,19 @@ def build_parser() -> argparse.ArgumentParser:
     crawl_seller_network.add_argument("--max-sellers", type=int, default=20)
     crawl_seller_network.add_argument("--sku-limit", type=int, default=0)
     crawl_seller_network.add_argument("--max-scrolls", type=int, default=8)
+    crawl_seller_network.add_argument("--seller-sku-workers", type=int, default=settings.seller_sku_workers)
     add_browser_options(crawl_seller_network, include_headless=True)
     crawl_seller_network.set_defaults(func=cmd_crawl_seller_network)
+
+    expand_seller_backlog = sub.add_parser("expand-seller-backlog")
+    expand_seller_backlog.add_argument("--process-limit", type=int, default=100)
+    expand_seller_backlog.add_argument("--max-depth", type=int, default=-1)
+    expand_seller_backlog.add_argument("--max-sellers", type=int, default=0)
+    expand_seller_backlog.add_argument("--sku-limit", type=int, default=0)
+    expand_seller_backlog.add_argument("--max-scrolls", type=int, default=8)
+    expand_seller_backlog.add_argument("--seller-sku-workers", type=int, default=settings.seller_sku_workers)
+    add_browser_options(expand_seller_backlog, include_headless=True)
+    expand_seller_backlog.set_defaults(func=cmd_expand_seller_backlog)
 
     crawl_top_list_network = sub.add_parser("crawl-top-list-network")
     add_top_list_options(crawl_top_list_network)
@@ -976,17 +2176,33 @@ def build_parser() -> argparse.ArgumentParser:
     crawl_top_list_network.add_argument("--max-sellers", type=int, default=20)
     crawl_top_list_network.add_argument("--sku-limit", type=int, default=0)
     crawl_top_list_network.add_argument("--max-scrolls", type=int, default=8)
+    crawl_top_list_network.add_argument("--seed-sku-workers", type=int, default=settings.seed_sku_workers)
+    crawl_top_list_network.add_argument("--seller-sku-workers", type=int, default=settings.seller_sku_workers)
+    crawl_top_list_network.add_argument("--retry-deferred-now", action="store_true")
     add_browser_options(crawl_top_list_network, include_headless=True)
     crawl_top_list_network.set_defaults(func=cmd_crawl_top_list_network)
+
+    expand_seed_pool_network = sub.add_parser("expand-seed-pool-network")
+    expand_seed_pool_network.add_argument("--query-key", default="")
+    expand_seed_pool_network.add_argument("--source-type", default="top_list")
+    expand_seed_pool_network.add_argument("--process-limit", type=int, default=0)
+    expand_seed_pool_network.add_argument("--retry-failed-now", action="store_true")
+    expand_seed_pool_network.add_argument("--retry-deferred-now", action="store_true")
+    expand_seed_pool_network.add_argument("--max-depth", type=int, default=-1)
+    expand_seed_pool_network.add_argument("--max-sellers", type=int, default=0)
+    expand_seed_pool_network.add_argument("--sku-limit", type=int, default=0)
+    expand_seed_pool_network.add_argument("--max-scrolls", type=int, default=8)
+    expand_seed_pool_network.add_argument("--seed-sku-workers", type=int, default=settings.seed_sku_workers)
+    expand_seed_pool_network.add_argument("--seller-sku-workers", type=int, default=settings.seller_sku_workers)
+    add_browser_options(expand_seed_pool_network, include_headless=True)
+    expand_seed_pool_network.set_defaults(func=cmd_expand_seed_pool_network)
 
     show_browser_config = sub.add_parser("show-browser-config")
     add_browser_options(show_browser_config, include_headless=True)
     show_browser_config.set_defaults(func=cmd_show_browser_config)
 
-    warmup_browser = sub.add_parser("warmup-browser")
-    warmup_browser.add_argument("--url", default="https://accounts.google.com/")
-    add_browser_options(warmup_browser)
-    warmup_browser.set_defaults(func=cmd_warmup_browser)
+    gui = sub.add_parser("gui")
+    gui.set_defaults(func=cmd_open_gui)
 
     launch_real_chrome = sub.add_parser("launch-real-chrome")
     launch_real_chrome.add_argument("--url", default="https://accounts.google.com/")
@@ -999,6 +2215,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    set_verbose(getattr(args, "verbose", False))
     try:
         args.func(args)
     except RuntimeError as exc:

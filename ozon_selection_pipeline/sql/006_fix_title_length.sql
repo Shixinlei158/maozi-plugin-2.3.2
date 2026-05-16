@@ -1,0 +1,6 @@
+USE ozon_selection;
+ALTER TABLE seller_home_skus MODIFY COLUMN title TEXT NULL;
+ALTER TABLE sku_products MODIFY COLUMN title TEXT NULL;
+ALTER TABLE sku_universe MODIFY COLUMN title TEXT NULL;
+ALTER TABLE seed_pool_skus MODIFY COLUMN name TEXT NULL;
+ALTER TABLE top_list_skus MODIFY COLUMN name TEXT NULL;

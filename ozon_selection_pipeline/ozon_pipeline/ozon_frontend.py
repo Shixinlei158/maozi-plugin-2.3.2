@@ -45,7 +45,7 @@ def parse_seller_home_page(data: dict[str, Any]) -> dict[str, Any]:
     widget_states = data.get("widgetStates") or {}
     key = next((k for k in widget_states if k.startswith("tileGridDesktop-")), None)
     if not key:
-        return {"items": [], "next_page": data.get("nextPage")}
+        return {"items": [], "next_page": extract_seller_home_next_page(data)}
     raw = widget_states[key]
     if isinstance(raw, str):
         raw = json.loads(raw)
@@ -69,7 +69,23 @@ def parse_seller_home_page(data: dict[str, Any]) -> dict[str, Any]:
                 "raw": tile,
             }
         )
-    return {"items": items, "next_page": data.get("nextPage")}
+    return {"items": items, "next_page": extract_seller_home_next_page(data)}
+
+
+def extract_seller_home_next_page(data: dict[str, Any]) -> str | None:
+    top_level = data.get("nextPage")
+    if top_level:
+        return top_level
+    widget_states = data.get("widgetStates") or {}
+    key = next((k for k in widget_states if k.startswith("infiniteVirtualPaginator-")), None)
+    if not key:
+        return None
+    raw = widget_states[key]
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    if not isinstance(raw, dict):
+        return None
+    return raw.get("nextPage")
 
 
 def parse_seller_offers_widget(data: dict[str, Any]) -> list[dict[str, Any]]:

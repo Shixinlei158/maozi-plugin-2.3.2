@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+import json
+import os
 import re
 import subprocess
 from pathlib import Path
+from threading import RLock
+import time
+from string import Template
 from typing import Any
 
 from .config import ROOT_DIR, settings
@@ -11,6 +17,12 @@ from .util import grams_from_text, percent_text_to_decimal, to_decimal, to_int
 
 MAOZI_SELECTION_URL = "https://ozon.maozierp.com/#/selection/top-list"
 MAOZI_SELECTION_ORIGIN = "https://ozon.maozierp.com"
+AUTOMATION_PAGE_NAME_PREFIX = "ozon-pipeline:"
+MAOZI_CHALLENGE_MARKERS = (
+    "正在进行安全验证",
+    "本网站使用安全服务防护恶意自动程序",
+    "cloudflare",
+)
 
 
 class BrowserOzonClient:
@@ -36,6 +48,20 @@ class BrowserOzonClient:
             settings.chrome_remote_debugging_port if remote_debugging_port is None else remote_debugging_port
         )
         self.headless = settings.chrome_headless if headless is None else headless
+        self.launch_display = settings.chrome_launch_display
+        self.launch_xauthority = settings.chrome_launch_xauthority
+        self.fingerprint_mask_enabled = settings.chrome_fingerprint_mask_enabled
+        self._playwright_cm: Any | None = None
+        self._playwright: Any | None = None
+        self._browser: Any | None = None
+        self._context: Any | None = None
+        self._session_owns_context = False
+        self._sticky_pages: dict[str, Any] = {}
+        self._task_lock = RLock()
+        self._prepared_context_ids: set[int] = set()
+        self._prepared_page_ids: set[int] = set()
+        self._fingerprint_config_cache: dict[str, Any] | None = None
+        self._detected_chrome_version: str | None = None
 
     def seller_offers(self, sku: str) -> list[dict[str, Any]]:
         return self._run_page_task(self._fetch_seller_offers, sku)
@@ -43,11 +69,44 @@ class BrowserOzonClient:
     def product_snapshot(self, sku: str) -> dict[str, Any]:
         return self._run_page_task(self._fetch_product_snapshot, sku)
 
+    def clone(self) -> "BrowserOzonClient":
+        return BrowserOzonClient(
+            profile_dir=str(self.profile_dir),
+            extension_dir=str(self.extension_dir),
+            executable_path=str(self.executable_path) if self.executable_path else None,
+            channel=self.channel,
+            proxy_server=self.proxy_server,
+            cdp_url=self.cdp_url,
+            remote_debugging_port=self.remote_debugging_port,
+            headless=self.headless,
+        )
+
     def seller_home_products(self, seller_url: str, max_scrolls: int = 8) -> dict[str, Any]:
         return self._run_page_task(self._fetch_seller_home_products, seller_url, max_scrolls=max_scrolls)
 
     def maozi_sku3(self, sku: str) -> dict[str, Any]:
         return self._run_page_task(self._fetch_maozi_sku3, sku)
+
+    def top_list_sku3(self, sku: str) -> dict[str, Any]:
+        result = self.top_list_sku3_batch([sku], concurrency=1)
+        payload = result.get(str(sku))
+        if isinstance(payload, dict):
+            return payload
+        raise RuntimeError(f"top-list sku3 batch did not return payload for sku {sku}")
+
+    def top_list_sku3_batch(self, skus: list[str], concurrency: int | None = None) -> dict[str, dict[str, Any]]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for sku in skus:
+            text = str(sku).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        if not normalized:
+            return {}
+        resolved_concurrency = max(1, int(concurrency or settings.top_list_sku3_batch_concurrency))
+        return self._run_page_task(self._fetch_top_list_sku3_batch, normalized, resolved_concurrency)
 
     def plugin_card_snapshot(self, sku: str) -> dict[str, Any]:
         return self._run_page_task(self._fetch_plugin_card_snapshot, sku)
@@ -55,23 +114,9 @@ class BrowserOzonClient:
     def top_list_page(self, filters: dict[str, Any], page_no: int, page_size: int = 50) -> dict[str, Any]:
         return self._run_page_task(self._fetch_top_list_page, filters, page_no, page_size)
 
-    def warmup(self, url: str = OZON_BASE) -> None:
-        sync_playwright = import_sync_playwright()
-
-        with sync_playwright() as p:
-            context = self._launch_context(p)
-            try:
-                page = context.pages[0] if context.pages else context.new_page()
-                page.goto(url, wait_until="domcontentloaded")
-                input(
-                    "浏览器已打开。请在该窗口完成目标账号、Ozon 和插件登录；确认无误后按回车关闭浏览器..."
-                )
-            finally:
-                context.close()
-
     def describe(self) -> dict[str, Any]:
         resolved_executable = self.executable_path or detect_chrome_executable()
-        return {
+        info = {
             "profile_dir": str(self.profile_dir),
             "extension_dir": str(self.extension_dir),
             "extension_exists": self.extension_dir.exists(),
@@ -83,7 +128,117 @@ class BrowserOzonClient:
             "cdp_url": self.cdp_url or "<none>",
             "remote_debugging_port": self.remote_debugging_port,
             "headless": self.headless,
+            "launch_display": self.launch_display or "<inherit>",
+            "launch_xauthority": self.launch_xauthority or "<inherit>",
+            "fingerprint_mask_enabled": self.fingerprint_mask_enabled,
         }
+        if self.fingerprint_mask_enabled:
+            fingerprint = self._fingerprint_config()
+            info.update(
+                {
+                    "fingerprint_user_agent": fingerprint["user_agent"],
+                    "fingerprint_platform": fingerprint["platform"],
+                    "fingerprint_locale": fingerprint["locale"],
+                    "fingerprint_hardware_concurrency": fingerprint["hardware_concurrency"],
+                    "fingerprint_device_memory": fingerprint["device_memory"],
+                    "fingerprint_webgl_vendor": fingerprint["webgl_vendor"],
+                    "fingerprint_webgl_renderer": fingerprint["webgl_renderer"],
+                    "fingerprint_screen": (
+                        f"{fingerprint['screen_width']}x{fingerprint['screen_height']}"
+                    ),
+                }
+            )
+        return info
+
+    def ping_cdp(self) -> dict[str, Any]:
+        if not self.cdp_url:
+            return {"reachable": False, "reason": "cdp_not_configured"}
+        if self._context is not None:
+            pages = [page.url for page in self._context.pages]
+            return {
+                "reachable": True,
+                "cdp_url": self.cdp_url,
+                "context_count": 1,
+                "page_count": len(pages),
+                "pages": pages,
+            }
+        sync_playwright = import_sync_playwright()
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(self.cdp_url)
+            contexts = browser.contexts
+            pages = []
+            for context in contexts:
+                for page in context.pages:
+                    pages.append(page.url)
+            return {
+                "reachable": True,
+                "cdp_url": self.cdp_url,
+                "context_count": len(contexts),
+                "page_count": len(pages),
+                "pages": pages,
+            }
+
+    @contextmanager
+    def session(self):
+        self.open_session()
+        try:
+            yield self
+        finally:
+            self.close_session()
+
+    def open_session(self) -> None:
+        if self._playwright is not None:
+            return
+        sync_playwright = import_sync_playwright()
+        self._playwright_cm = sync_playwright()
+        self._playwright = self._playwright_cm.__enter__()
+        if self.cdp_url:
+            try:
+                self._browser = self._playwright.chromium.connect_over_cdp(self.cdp_url)
+            except Exception:
+                self.launch_real_chrome()
+                time.sleep(3)
+                self._browser = self._playwright.chromium.connect_over_cdp(self.cdp_url)
+            existing_contexts = list(self._browser.contexts)
+            if existing_contexts:
+                self._context = existing_contexts[0]
+                self._session_owns_context = False
+                self._ensure_context_fingerprint(self._context)
+                self._prune_unused_pages(self._context, force=True)
+            else:
+                self._context = self._browser.new_context()
+                self._session_owns_context = True
+                self._ensure_context_fingerprint(self._context)
+            return
+        self._context = self._launch_context(self._playwright)
+        self._session_owns_context = True
+
+    def close_session(self) -> None:
+        try:
+            for page in list(self._sticky_pages.values()):
+                try:
+                    if page is not None and not page.is_closed():
+                        page.close()
+                except Exception:
+                    pass
+            self._sticky_pages.clear()
+            if self._context is not None and self._session_owns_context:
+                try:
+                    self._context.close()
+                except Exception:
+                    pass
+        finally:
+            self._context = None
+            self._session_owns_context = False
+            self._browser = None
+            self._prepared_context_ids.clear()
+            self._prepared_page_ids.clear()
+            if self._playwright_cm is not None:
+                try:
+                    self._playwright_cm.__exit__(None, None, None)
+                finally:
+                    self._playwright_cm = None
+                    self._playwright = None
 
     def launch_real_chrome(self, url: str = OZON_BASE) -> None:
         executable = self.executable_path or detect_chrome_executable()
@@ -91,29 +246,58 @@ class BrowserOzonClient:
             raise RuntimeError(
                 "Chrome executable was not found. Set CHROME_EXECUTABLE_PATH or pass --chrome-exe explicitly."
             )
+        fingerprint = self._fingerprint_config() if self.fingerprint_mask_enabled else None
         args = [
             str(executable),
             f"--user-data-dir={self.profile_dir}",
             f"--remote-debugging-port={self.remote_debugging_port}",
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run",
+            "--no-default-browser-check",
         ]
+        launch_url = url
+        if fingerprint:
+            args.extend(
+                [
+                    f"--user-agent={fingerprint['user_agent']}",
+                    f"--window-size={fingerprint['screen_width']},{fingerprint['screen_height']}",
+                    f"--lang={fingerprint['locale']}",
+                    "--use-gl=swiftshader",
+                    "--enable-unsafe-swiftshader",
+                    "--ignore-gpu-blocklist",
+                    "--disable-infobars",
+                ]
+            )
+            launch_url = "about:blank"
         if self.proxy_server:
             args.append(f"--proxy-server={self.proxy_server}")
         if self.extension_dir.exists():
             args.extend(
                 [
-                    f"--disable-extensions-except={self.extension_dir}",
                     f"--load-extension={self.extension_dir}",
                 ]
             )
-        args.append(url)
-        subprocess.Popen(args)
+        args.append(launch_url)
+        subprocess.Popen(args, env=self._chrome_launch_env())
+        if fingerprint:
+            self._bootstrap_real_chrome(url)
 
     def _launch_context(self, playwright: Any):
-        args = ["--disable-dev-shm-usage"]
+        args = ["--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled", "--enable-unsafe-swiftshader"]
+        fingerprint = self._fingerprint_config() if self.fingerprint_mask_enabled else None
+        if fingerprint:
+            args.extend(
+                [
+                    f"--user-agent={fingerprint['user_agent']}",
+                    f"--window-size={fingerprint['screen_width']},{fingerprint['screen_height']}",
+                    f"--lang={fingerprint['locale']}",
+                    "--use-gl=swiftshader",
+                    "--ignore-gpu-blocklist",
+                ]
+            )
         if self.extension_dir.exists():
             args.extend(
                 [
-                    f"--disable-extensions-except={self.extension_dir}",
                     f"--load-extension={self.extension_dir}",
                 ]
             )
@@ -121,87 +305,530 @@ class BrowserOzonClient:
             "headless": self.headless,
             "args": args,
         }
+        if fingerprint:
+            kwargs["user_agent"] = fingerprint["user_agent"]
+            kwargs["locale"] = fingerprint["locale"]
+            kwargs["viewport"] = {
+                "width": fingerprint["screen_width"],
+                "height": fingerprint["screen_height"],
+            }
+            kwargs["screen"] = {
+                "width": fingerprint["screen_width"],
+                "height": fingerprint["screen_height"],
+            }
+            if fingerprint["timezone"]:
+                kwargs["timezone_id"] = fingerprint["timezone"]
         if self.executable_path:
             kwargs["executable_path"] = str(self.executable_path)
         elif self.channel:
             kwargs["channel"] = self.channel
         if self.proxy_server:
             kwargs["proxy"] = {"server": self.proxy_server}
-        return playwright.chromium.launch_persistent_context(
+        context = playwright.chromium.launch_persistent_context(
             str(self.profile_dir),
             **kwargs,
         )
+        self._ensure_context_fingerprint(context)
+        return context
 
     def _run_page_task(self, handler: Any, *args: Any, **kwargs: Any) -> Any:
-        sync_playwright = import_sync_playwright()
-
-        with sync_playwright() as p:
-            if self.cdp_url:
+        with self._task_lock:
+            if self._context is not None:
+                if self.cdp_url:
+                    page, owned = self._acquire_cdp_page(self._context, handler)
+                else:
+                    page, owned = self._context.new_page(), True
                 try:
-                    browser = p.chromium.connect_over_cdp(self.cdp_url)
-                    context = browser.contexts[0] if browser.contexts else browser.new_context()
-                    page = self._acquire_cdp_page(context, handler)
-                    try:
-                        return handler(page, *args, **kwargs)
-                    finally:
-                        if page not in context.pages:
+                    self._prepare_page(page)
+                    return handler(page, *args, **kwargs)
+                finally:
+                    if owned:
+                        try:
                             page.close()
-                except Exception:
-                    pass
-            context = self._launch_context(p)
+                        except Exception:
+                            pass
+                    if self.cdp_url:
+                        self._prune_unused_pages(self._context, current_page=page)
+
+            sync_playwright = import_sync_playwright()
+
+            with sync_playwright() as p:
+                if self.cdp_url:
+                    try:
+                        browser = p.chromium.connect_over_cdp(self.cdp_url)
+                    except Exception:
+                        self.launch_real_chrome()
+                        time.sleep(3)
+                        browser = p.chromium.connect_over_cdp(self.cdp_url)
+
+                    try:
+                        context = browser.contexts[0] if browser.contexts else browser.new_context()
+                        self._ensure_context_fingerprint(context)
+                        page, owned = self._acquire_cdp_page(context, handler)
+                        try:
+                            self._prepare_page(page)
+                            return handler(page, *args, **kwargs)
+                        finally:
+                            if owned:
+                                try:
+                                    page.close()
+                                except Exception:
+                                    pass
+                            self._prune_unused_pages(context, current_page=page)
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"cdp page task failed for {getattr(handler, '__name__', 'handler')}: {exc}"
+                        ) from exc
+                context = self._launch_context(p)
+                try:
+                    page = context.new_page()
+                    self._prepare_page(page)
+                    return handler(page, *args, **kwargs)
+                finally:
+                    context.close()
+
+    def _chrome_launch_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        if self.launch_display:
+            env["DISPLAY"] = self.launch_display
+        if self.launch_xauthority:
+            env["XAUTHORITY"] = self.launch_xauthority
+        return env
+
+    def _bootstrap_real_chrome(self, url: str) -> None:
+        cdp_url = self.cdp_url or f"http://127.0.0.1:{self.remote_debugging_port}"
+        deadline = time.time() + 20
+        last_error: Exception | None = None
+        while time.time() < deadline:
+            sync_playwright = import_sync_playwright()
+            with sync_playwright() as p:
+                try:
+                    browser = p.chromium.connect_over_cdp(cdp_url)
+                    context = browser.contexts[0] if browser.contexts else browser.new_context()
+                    self._ensure_context_fingerprint(context)
+                    page = context.pages[0] if context.pages else context.new_page()
+                    self._prepare_page(page)
+                    page.goto(url, wait_until="domcontentloaded", timeout=120000)
+                    return
+                except Exception as exc:
+                    last_error = exc
+                    time.sleep(1)
+        raise RuntimeError(f"Chrome launched but fingerprint bootstrap over CDP failed: {last_error}")
+
+    def _ensure_context_fingerprint(self, context: Any) -> None:
+        if not self.fingerprint_mask_enabled:
+            return
+        context_id = id(context)
+        if context_id in self._prepared_context_ids:
+            return
+        context.add_init_script(self._fingerprint_override_script())
+        self._prepared_context_ids.add(context_id)
+
+    def _prepare_page(self, page: Any) -> None:
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+
+        if not self.fingerprint_mask_enabled:
+            return
+        self._ensure_context_fingerprint(page.context)
+        page_id = id(page)
+        if page_id in self._prepared_page_ids:
+            return
+
+        fingerprint = self._fingerprint_config(page=page)
+        try:
+            session = page.context.new_cdp_session(page)
+            session.send(
+                "Emulation.setUserAgentOverride",
+                {
+                    "userAgent": fingerprint["user_agent"],
+                    "acceptLanguage": fingerprint["accept_language"],
+                    "platform": fingerprint["platform_label"],
+                    "userAgentMetadata": {
+                        "brands": fingerprint["brands"],
+                        "fullVersionList": fingerprint["full_version_list"],
+                        "platform": fingerprint["platform_label"],
+                        "platformVersion": "10.0.0",
+                        "architecture": "x86",
+                        "model": "",
+                        "mobile": False,
+                        "bitness": "64",
+                        "wow64": False,
+                    },
+                },
+            )
+        except Exception:
+            pass
+
+        try:
+            page.evaluate(self._fingerprint_override_script())
+        except Exception:
+            pass
+
+        self._prepared_page_ids.add(page_id)
+
+    def _fingerprint_config(self, page: Any | None = None) -> dict[str, Any]:
+        if self._fingerprint_config_cache is not None:
+            return self._fingerprint_config_cache
+
+        locale = (settings.chrome_fingerprint_locale or "zh-CN").strip()
+        primary_language = locale.split(",", 1)[0].split("-", 1)[0] or "zh"
+        accept_language = f"{locale},{primary_language};q=0.9" if primary_language != locale else locale
+        version = self._resolve_chrome_version(page=page)
+        full_version = parse_chrome_version(settings.chrome_fingerprint_user_agent) or version or "136.0.0.0"
+        major_version = full_version.split(".", 1)[0]
+        user_agent = (
+            settings.chrome_fingerprint_user_agent.strip()
+            or build_windows_chrome_user_agent(full_version)
+        )
+        screen_width = max(1280, int(settings.chrome_fingerprint_screen_width))
+        screen_height = max(720, int(settings.chrome_fingerprint_screen_height))
+        avail_width = settings.chrome_fingerprint_screen_avail_width or screen_width
+        avail_height = settings.chrome_fingerprint_screen_avail_height or max(screen_height - 40, 600)
+        self._fingerprint_config_cache = {
+            "user_agent": user_agent,
+            "platform": settings.chrome_fingerprint_platform,
+            "platform_label": settings.chrome_fingerprint_platform_label,
+            "hardware_concurrency": max(2, int(settings.chrome_fingerprint_hardware_concurrency)),
+            "device_memory": max(2, int(settings.chrome_fingerprint_device_memory)),
+            "locale": locale,
+            "accept_language": accept_language,
+            "timezone": settings.chrome_fingerprint_timezone.strip(),
+            "screen_width": screen_width,
+            "screen_height": screen_height,
+            "screen_avail_width": max(800, int(avail_width)),
+            "screen_avail_height": max(600, int(avail_height)),
+            "color_depth": max(16, int(settings.chrome_fingerprint_color_depth)),
+            "webgl_vendor": settings.chrome_fingerprint_webgl_vendor,
+            "webgl_renderer": settings.chrome_fingerprint_webgl_renderer,
+            "full_version": full_version,
+            "major_version": major_version,
+            "brands": [
+                {"brand": "Chromium", "version": major_version},
+                {"brand": "Google Chrome", "version": major_version},
+                {"brand": "Not.A/Brand", "version": "24"},
+            ],
+            "full_version_list": [
+                {"brand": "Chromium", "version": full_version},
+                {"brand": "Google Chrome", "version": full_version},
+                {"brand": "Not.A/Brand", "version": "24.0.0.0"},
+            ],
+        }
+        return self._fingerprint_config_cache
+
+    def _fingerprint_override_script(self) -> str:
+        fingerprint = self._fingerprint_config()
+        payload = json.dumps(
+            {
+                "userAgent": fingerprint["user_agent"],
+                "platform": fingerprint["platform"],
+                "platformLabel": fingerprint["platform_label"],
+                "hardwareConcurrency": fingerprint["hardware_concurrency"],
+                "deviceMemory": fingerprint["device_memory"],
+                "locale": fingerprint["locale"],
+                "languages": [fingerprint["locale"], fingerprint["locale"].split("-", 1)[0]],
+                "screenWidth": fingerprint["screen_width"],
+                "screenHeight": fingerprint["screen_height"],
+                "screenAvailWidth": fingerprint["screen_avail_width"],
+                "screenAvailHeight": fingerprint["screen_avail_height"],
+                "colorDepth": fingerprint["color_depth"],
+                "webglVendor": fingerprint["webgl_vendor"],
+                "webglRenderer": fingerprint["webgl_renderer"],
+                "brands": fingerprint["brands"],
+                "fullVersionList": fingerprint["full_version_list"],
+                "majorVersion": fingerprint["major_version"],
+                "fullVersion": fingerprint["full_version"],
+            },
+            ensure_ascii=True,
+        )
+        return Template(
+            """
+(() => {{
+  const cfg = $payload;
+  const appVersion = cfg.userAgent.replace(/^Mozilla\\//, '');
+  const highEntropy = {{
+    architecture: 'x86',
+    bitness: '64',
+    brands: cfg.brands,
+    fullVersionList: cfg.fullVersionList,
+    mobile: false,
+    model: '',
+    platform: cfg.platformLabel,
+    platformVersion: '10.0.0',
+    uaFullVersion: cfg.fullVersion,
+    wow64: false,
+  }};
+
+  function overrideGetter(target, key, getter) {{
+    if (!target) {{
+      return;
+    }}
+    try {{
+      Object.defineProperty(target, key, {{
+        configurable: true,
+        get: getter,
+      }});
+    }} catch (error) {{
+    }}
+  }}
+
+  const navigatorProto = Object.getPrototypeOf(navigator);
+  overrideGetter(navigatorProto, 'platform', () => cfg.platform);
+  overrideGetter(navigatorProto, 'userAgent', () => cfg.userAgent);
+  overrideGetter(navigatorProto, 'appVersion', () => appVersion);
+  overrideGetter(navigatorProto, 'hardwareConcurrency', () => cfg.hardwareConcurrency);
+  overrideGetter(navigatorProto, 'deviceMemory', () => cfg.deviceMemory);
+  overrideGetter(navigatorProto, 'language', () => cfg.locale);
+  overrideGetter(navigatorProto, 'languages', () => cfg.languages.slice());
+  overrideGetter(navigatorProto, 'vendor', () => 'Google Inc.');
+  overrideGetter(navigatorProto, 'maxTouchPoints', () => 0);
+  overrideGetter(navigatorProto, 'webdriver', () => false);
+  overrideGetter(navigatorProto, 'userAgentData', () => ({
+    brands: cfg.brands,
+    mobile: false,
+    platform: cfg.platformLabel,
+    toJSON() {{
+      return {{
+        brands: cfg.brands,
+        mobile: false,
+        platform: cfg.platformLabel,
+      }};
+    }},
+    getHighEntropyValues(hints) {{
+      const response = {{}};
+      for (const hint of hints || []) {{
+        if (Object.prototype.hasOwnProperty.call(highEntropy, hint)) {{
+          response[hint] = highEntropy[hint];
+        }}
+      }}
+      return Promise.resolve(response);
+    }},
+  }));
+
+  const screenProto = Object.getPrototypeOf(screen);
+  overrideGetter(screenProto, 'width', () => cfg.screenWidth);
+  overrideGetter(screenProto, 'height', () => cfg.screenHeight);
+  overrideGetter(screenProto, 'availWidth', () => cfg.screenAvailWidth);
+  overrideGetter(screenProto, 'availHeight', () => cfg.screenAvailHeight);
+  overrideGetter(screenProto, 'colorDepth', () => cfg.colorDepth);
+  overrideGetter(screenProto, 'pixelDepth', () => cfg.colorDepth);
+
+  function patchWebGL(ctor) {{
+    if (!ctor || !ctor.prototype || typeof ctor.prototype.getParameter !== 'function') {{
+      return;
+    }}
+    const original = ctor.prototype.getParameter;
+    ctor.prototype.getParameter = function(parameter) {{
+      if (parameter === 37445) {{
+        return cfg.webglVendor;
+      }}
+      if (parameter === 37446) {{
+        return cfg.webglRenderer;
+      }}
+      return original.call(this, parameter);
+    }};
+  }}
+
+  patchWebGL(globalThis.WebGLRenderingContext);
+  patchWebGL(globalThis.WebGL2RenderingContext);
+}})();
+"""
+        ).substitute(payload=payload).replace("{{", "{").replace("}}", "}")
+
+    def _resolve_chrome_version(self, page: Any | None = None) -> str | None:
+        if self._detected_chrome_version:
+            return self._detected_chrome_version
+
+        if page is not None:
             try:
-                page = context.new_page()
-                return handler(page, *args, **kwargs)
-            finally:
-                context.close()
+                page_user_agent = page.evaluate("() => navigator.userAgent")
+                version = parse_chrome_version(str(page_user_agent))
+                if version:
+                    self._detected_chrome_version = version
+                    return version
+            except Exception:
+                pass
+
+        executable = self.executable_path or detect_chrome_executable()
+        if executable and executable.exists():
+            try:
+                result = subprocess.run(
+                    [str(executable), "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                version = parse_chrome_version((result.stdout or "") + (result.stderr or ""))
+                if version:
+                    self._detected_chrome_version = version
+                    return version
+            except Exception:
+                pass
+
+        self._detected_chrome_version = "136.0.0.0"
+        return self._detected_chrome_version
 
     def _acquire_cdp_page(self, context: Any, handler: Any):
         handler_name = getattr(handler, "__name__", "")
         pages = list(context.pages)
 
-        if handler_name in {"_fetch_seller_offers", "_fetch_seller_home_products", "_fetch_seller_home_products_api"}:
-            for page in pages:
-                if page.url.startswith(OZON_BASE):
-                    return page
+        sticky_handlers = {
+            "_fetch_top_list_page",
+            "_fetch_top_list_sku3_batch",
+            "_fetch_maozi_sku3",
+            "_fetch_seller_offers",
+            "_fetch_product_snapshot",
+            "_fetch_plugin_card_snapshot",
+            "_fetch_seller_home_products",
+            "_fetch_seller_home_products_api",
+        }
+        if handler_name in sticky_handlers:
+            cached = self._sticky_pages.get(handler_name)
+            if cached is not None:
+                try:
+                    if not cached.is_closed():
+                        return cached, False
+                except Exception:
+                    pass
+                self._sticky_pages.pop(handler_name, None)
 
-        if handler_name == "_fetch_top_list_page":
-            for page in pages:
-                if page.url.startswith(MAOZI_SELECTION_ORIGIN):
-                    return page
+            if handler_name == "_fetch_maozi_sku3":
+                extension_prefix = f"chrome-extension://{self.extension_id}/"
+                for page in pages:
+                    try:
+                        if page.url.startswith(extension_prefix):
+                            self._sticky_pages[handler_name] = page
+                            return page, False
+                    except Exception:
+                        continue
+
+            page = context.new_page()
+            self._mark_managed_page(page, handler_name)
+            self._sticky_pages[handler_name] = page
+            return page, False
 
         # Prefer reusing a disposable tab so we do not disturb the user's live Ozon pages.
         for page in pages:
             if page.url.startswith(("about:blank", "chrome-error://")):
-                return page
+                return page, False
+
+        if handler_name in {"_fetch_top_list_page", "_fetch_maozi_sku3"}:
+            for page in pages:
+                if page.url.startswith(MAOZI_SELECTION_ORIGIN):
+                    return page, False
+
+        if handler_name in {"_fetch_seller_offers", "_fetch_seller_home_products", "_fetch_seller_home_products_api"}:
+            for page in pages:
+                if page.url.startswith(OZON_BASE):
+                    return page, False
+
+        for page in pages:
+            if page.url.startswith(OZON_BASE):
+                return page, False
 
         if handler_name == "_fetch_maozi_sku3":
             extension_prefix = f"chrome-extension://{self.extension_id}/"
             for page in pages:
                 if page.url.startswith(extension_prefix):
-                    return page
+                    return page, False
+
+        page = context.new_page()
+        self._mark_managed_page(page, handler_name)
+        return page, True
+
+    def _mark_managed_page(self, page: Any, handler_name: str) -> None:
+        try:
+            if page.is_closed():
+                return
+            page.evaluate(
+                """
+                (name) => {
+                  try {
+                    window.name = name;
+                  } catch (error) {
+                  }
+                }
+                """,
+                f"{AUTOMATION_PAGE_NAME_PREFIX}{handler_name}",
+            )
+        except Exception:
+            pass
+
+    def _page_marker(self, page: Any) -> str:
+        try:
+            if page.is_closed():
+                return ""
+            return str(page.evaluate("() => window.name || ''") or "")
+        except Exception:
+            return ""
+
+    def _prune_unused_pages(self, context: Any, current_page: Any | None = None, force: bool = False) -> None:
+        try:
+            pages = list(context.pages)
+        except Exception:
+            return
+        if not force and len(pages) <= settings.chrome_page_prune_threshold:
+            return
+
+        keep_pages = {page for page in self._sticky_pages.values() if page is not None}
+        if current_page is not None:
+            keep_pages.add(current_page)
+        popup_url = self._extension_popup_url()
 
         for page in pages:
-            if page.url.startswith(OZON_BASE):
-                return page
+            if page in keep_pages:
+                continue
+            try:
+                if page.is_closed():
+                    continue
+            except Exception:
+                continue
 
-        return context.new_page()
+            try:
+                url = str(page.url or "")
+            except Exception:
+                url = ""
+
+            should_close = False
+            if url.startswith(("about:blank", "chrome-error://")):
+                should_close = True
+            elif url == popup_url:
+                should_close = True
+            else:
+                marker = self._page_marker(page)
+                if marker.startswith(AUTOMATION_PAGE_NAME_PREFIX):
+                    should_close = True
+
+            if not should_close:
+                continue
+
+            try:
+                page.close()
+            except Exception:
+                pass
 
     def _fetch_seller_offers(self, page: Any, sku: str) -> list[dict[str, Any]]:
         if not page.url.startswith(OZON_BASE):
             page.goto(OZON_BASE, wait_until="domcontentloaded")
         data = page.evaluate(
             """
-            async (sku) => {
+            async ({ sku, timeoutMs }) => {
               const target = `/modal/otherOffersFromSellers?product_id=${sku}`;
               const url = `/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(target)}`;
-              const response = await fetch(url, { credentials: "include" });
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), timeoutMs);
+              const response = await fetch(url, { credentials: "include", signal: controller.signal });
+              clearTimeout(timer);
               if (!response.ok) {
                 throw new Error(`Ozon seller offers request failed: ${response.status}`);
               }
               return await response.json();
             }
             """,
-            str(sku),
+            {"sku": str(sku), "timeoutMs": 15000},
         )
         return parse_seller_offers_widget(data)
 
@@ -294,53 +921,236 @@ class BrowserOzonClient:
         }
 
     def _fetch_maozi_sku3(self, page: Any, sku: str) -> dict[str, Any]:
-        page.goto(self._extension_popup_url(), wait_until="domcontentloaded", timeout=120000)
-        page.wait_for_timeout(1000)
-        result = page.evaluate(
+        errors: list[str] = []
+
+        try:
+            target_url = self._extension_popup_url()
+            current_url = ""
+            try:
+                current_url = page.url or ""
+            except Exception:
+                current_url = ""
+            if current_url != target_url:
+                page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(300)
+            result = page.evaluate(
+                """
+                async ({ sku, pluginVersion }) => {
+                  const storage = await chrome.storage.local.get(["maozierp-token"]);
+                  const token = storage["maozierp-token"];
+                  if (!token) {
+                    throw new Error("maozierp-token is missing in chrome.storage.local");
+                  }
+                  const response = await fetch(`https://api.maozierp.com/api.chrome/sku3?sku=${sku}`, {
+                    method: "POST",
+                    headers: {
+                      "Authorization": `Bearer ${token}`,
+                      "Client": "plugin",
+                      "Plugin-Version": pluginVersion,
+                      "Content-Type": "application/json",
+                      "User-Agent": "Mozilla/5.0"
+                    },
+                    body: JSON.stringify({ sku: String(sku) })
+                  });
+                  const text = await response.text();
+                  let data = null;
+                  try {
+                    data = JSON.parse(text);
+                  } catch (error) {
+                  }
+                  return {
+                    ok: response.ok,
+                    status: response.status,
+                    text,
+                    data
+                  };
+                }
+                """,
+                {"sku": str(sku), "pluginVersion": settings.maozi_plugin_version},
+            )
+            if result.get("ok"):
+                data = result.get("data")
+                if isinstance(data, dict):
+                    return data
+                errors.append("extension token returned non-JSON payload")
+            else:
+                response_text = str(result.get("text") or "")
+                lowered = response_text.lower()
+                if any(marker.lower() in lowered for marker in MAOZI_CHALLENGE_MARKERS):
+                    raise RuntimeError("maozierp Cloudflare challenge is active; manual verification is required")
+                errors.append(f"extension token request failed with HTTP {result.get('status')}: {response_text}")
+        except Exception as exc:
+            errors.append(f"extension token request error: {exc}")
+
+        try:
+            self._ensure_maozi_selection_ready(page)
+            result = page.evaluate(
+                """
+                async ({ sku }) => {
+                  const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
+                  const token = access.accessToken || '';
+                  if (!token) {
+                    throw new Error('maozierp-core-access.accessToken is missing');
+                  }
+                  const response = await fetch(`https://api.maozierp.com/api.chrome/sku3?sku=${sku}`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                      'Accept': 'application/json, text/plain, */*',
+                      'Authorization': `Bearer ${token}`,
+                      'Client': 'pc',
+                      'Content-Type': 'application/json',
+                      'DNT': '1'
+                    },
+                    body: JSON.stringify({ sku: String(sku) })
+                  });
+                  const text = await response.text();
+                  let data = null;
+                  try {
+                    data = JSON.parse(text);
+                  } catch (error) {
+                  }
+                  return {
+                    ok: response.ok,
+                    status: response.status,
+                    text,
+                    data
+                  };
+                }
+                """,
+                {"sku": str(sku)},
+            )
+            if result.get("ok"):
+                data = result.get("data")
+                if isinstance(data, dict):
+                    return data
+                errors.append("site token returned non-JSON payload")
+            else:
+                response_text = str(result.get("text") or "")
+                lowered = response_text.lower()
+                if any(marker.lower() in lowered for marker in MAOZI_CHALLENGE_MARKERS):
+                    raise RuntimeError("maozierp Cloudflare challenge is active; manual verification is required")
+                errors.append(f"site token request failed with HTTP {result.get('status')}: {response_text}")
+        except Exception as exc:
+            errors.append(f"site token request error: {exc}")
+
+        raise RuntimeError("; ".join(errors))
+
+    def _fetch_top_list_sku3_batch(
+        self,
+        page: Any,
+        skus: list[str],
+        concurrency: int,
+    ) -> dict[str, dict[str, Any]]:
+        self._ensure_maozi_selection_ready(page)
+        raw = page.evaluate(
             """
-            async ({ sku, pluginVersion }) => {
-              const storage = await chrome.storage.local.get(["maozierp-token"]);
-              const token = storage["maozierp-token"];
+            async ({ skus, concurrency, timeoutMs }) => {
+              const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
+              const token = access.accessToken || '';
               if (!token) {
-                throw new Error("maozierp-token is missing in chrome.storage.local");
+                throw new Error('maozierp-core-access.accessToken is missing');
               }
-              const response = await fetch(`https://api.maozierp.com/api.chrome/sku3?sku=${sku}`, {
-                method: "POST",
-                headers: {
-                  "Authorization": `Bearer ${token}`,
-                  "Client": "plugin",
-                  "Plugin-Version": pluginVersion,
-                  "Content-Type": "application/json",
-                  "User-Agent": "Mozilla/5.0"
-                },
-                body: JSON.stringify({ sku: String(sku) })
-              });
-              const text = await response.text();
-              let data = null;
-              try {
-                data = JSON.parse(text);
-              } catch (error) {
+              const items = Array.from(new Set((skus || []).map((sku) => String(sku).trim()).filter(Boolean)));
+              const results = {};
+              let nextIndex = 0;
+              const workerTotal = Math.max(1, Math.min(Number(concurrency) || 1, items.length));
+
+              async function fetchOne(sku) {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), timeoutMs);
+                try {
+                  const response = await fetch(`https://api.maozierp.com/api.chrome/sku3?sku=${encodeURIComponent(sku)}`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    signal: controller.signal,
+                    headers: {
+                      'Accept': 'application/json, text/plain, */*',
+                      'Authorization': `Bearer ${token}`,
+                      'Client': 'pc',
+                      'X-Client-Type': 'pc',
+                      'Content-Type': 'application/json',
+                      'DNT': '1'
+                    },
+                    body: JSON.stringify({ sku })
+                  });
+                  const text = await response.text();
+                  let data = null;
+                  try {
+                    data = JSON.parse(text);
+                  } catch (error) {
+                  }
+                  results[sku] = {
+                    ok: response.ok,
+                    status: response.status,
+                    text,
+                    data
+                  };
+                } catch (error) {
+                  results[sku] = {
+                    ok: false,
+                    status: 0,
+                    text: '',
+                    data: null,
+                    error: String(error && error.message ? error.message : error)
+                  };
+                } finally {
+                  clearTimeout(timer);
+                }
               }
-              return {
-                ok: response.ok,
-                status: response.status,
-                text,
-                data
-              };
+
+              async function worker() {
+                while (true) {
+                  const index = nextIndex++;
+                  if (index >= items.length) {
+                    return;
+                  }
+                  await fetchOne(items[index]);
+                }
+              }
+
+              await Promise.all(Array.from({ length: workerTotal }, () => worker()));
+              return results;
             }
             """,
-            {"sku": str(sku), "pluginVersion": settings.maozi_plugin_version},
+            {
+                "skus": [str(sku) for sku in skus],
+                "concurrency": int(concurrency),
+                "timeoutMs": min(max(settings.request_timeout_seconds * 1000, 5000), 30000),
+            },
         )
-        if not result.get("ok"):
-            raise RuntimeError(f"extension sku3 request failed with HTTP {result.get('status')}: {result.get('text')}")
-        data = result.get("data")
-        if not isinstance(data, dict):
-            raise RuntimeError("extension sku3 request returned non-JSON payload")
-        return data
+        if not isinstance(raw, dict):
+            raise RuntimeError("top-list sku3 batch returned invalid payload")
+        results: dict[str, dict[str, Any]] = {}
+        for sku in skus:
+            payload = raw.get(str(sku))
+            if not isinstance(payload, dict):
+                continue
+            response_text = str(payload.get("text") or payload.get("error") or "")
+            lowered = response_text.lower()
+            if any(marker.lower() in lowered for marker in MAOZI_CHALLENGE_MARKERS):
+                raise RuntimeError("maozierp Cloudflare challenge is active; manual verification is required")
+            if payload.get("ok"):
+                data = payload.get("data")
+                if isinstance(data, dict):
+                    results[str(sku)] = data
+            continue
+        return results
 
     def _fetch_plugin_card_snapshot(self, page: Any, sku: str) -> dict[str, Any]:
         page.goto(f"{OZON_BASE}/product/{sku}/", wait_until="domcontentloaded", timeout=120000)
-        page.wait_for_timeout(8000)
+        try:
+            page.wait_for_function(
+                """
+                () => {
+                  const text = document.body?.innerText || '';
+                  return text.includes('类目：') || text.includes('品牌：') || text.includes('月销量：');
+                }
+                """,
+                timeout=5000,
+            )
+        except Exception:
+            pass
         body_text = page.evaluate("() => document.body.innerText || ''")
         card = parse_plugin_card_text(body_text)
         card["raw_text"] = body_text
@@ -354,37 +1164,61 @@ class BrowserOzonClient:
         return self._fetch_seller_home_products_dom(page, seller_url, max_scrolls=max_scrolls)
 
     def _fetch_seller_home_products_api(self, page: Any, seller_url: str) -> dict[str, Any]:
-        if not page.url.startswith(OZON_BASE):
+        # Directly navigate to the seller URL to provide visual feedback and satisfy origin requirements
+        if page.url != seller_url:
             page.goto(seller_url, wait_until="domcontentloaded", timeout=120000)
-            page.wait_for_timeout(1500)
+            # Give it a short wait to let basic DOM/anti-bot settle before hitting the API
+            page.wait_for_timeout(2000)
+            
         seller_path = extract_relative_url(seller_url)
-        raw = page.evaluate(
-            """
-            async ({ sellerPath }) => {
-              const response = await fetch(`/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(sellerPath)}`, {
-                credentials: "include"
-              });
-              return {
-                ok: response.ok,
-                status: response.status,
-                text: await response.text(),
-              };
-            }
-            """,
-            {"sellerPath": seller_path},
-        )
-        if not raw.get("ok"):
-            raise RuntimeError(f"seller home api request failed with HTTP {raw.get('status')}")
-        import json
+        all_items: list[dict[str, Any]] = []
+        seen_skus: set[str] = set()
+        seen_paths: set[str] = set()
+        pages_fetched = 0
+        next_path: str | None = seller_path
+        while next_path and next_path not in seen_paths and pages_fetched < 100:
+            seen_paths.add(next_path)
+            raw = page.evaluate(
+                """
+                async ({ sellerPath, timeoutMs }) => {
+                  const controller = new AbortController();
+                  const timer = setTimeout(() => controller.abort(), timeoutMs);
+                  const response = await fetch(`/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(sellerPath)}`, {
+                    credentials: "include",
+                    signal: controller.signal
+                  });
+                  clearTimeout(timer);
+                  return {
+                    ok: response.ok,
+                    status: response.status,
+                    text: await response.text(),
+                  };
+                }
+                """,
+                {"sellerPath": next_path, "timeoutMs": 15000},
+            )
+            if not raw.get("ok"):
+                raise RuntimeError(f"seller home api request failed with HTTP {raw.get('status')}")
+            import json
 
-        data = json.loads(raw["text"])
-        parsed = parse_seller_home_page(data)
+            data = json.loads(raw["text"])
+            parsed = parse_seller_home_page(data)
+            for item in parsed.get("items") or []:
+                sku = str(item.get("sku") or "")
+                key = sku or str(item.get("href") or item.get("product_url") or "")
+                if not key or key in seen_skus:
+                    continue
+                seen_skus.add(key)
+                all_items.append(item)
+            next_path = parsed.get("next_page")
+            pages_fetched += 1
         return {
             "page_url": seller_url,
             "page_title": page.title(),
-            "items": parsed.get("items") or [],
-            "next_page": parsed.get("next_page"),
-            "source": "entrypoint_api",
+            "items": all_items,
+            "next_page": next_path,
+            "source": "entrypoint_api_full",
+            "pages_fetched": pages_fetched,
         }
 
     def _fetch_seller_home_products_dom(self, page: Any, seller_url: str, max_scrolls: int = 8) -> dict[str, Any]:
@@ -435,12 +1269,10 @@ class BrowserOzonClient:
         return raw
 
     def _fetch_top_list_page(self, page: Any, filters: dict[str, Any], page_no: int, page_size: int = 50) -> dict[str, Any]:
-        if not page.url.startswith(MAOZI_SELECTION_ORIGIN):
-            page.goto(MAOZI_SELECTION_URL, wait_until="domcontentloaded", timeout=120000)
-            page.wait_for_timeout(1500)
+        self._ensure_maozi_selection_ready(page)
         return page.evaluate(
             """
-            async ({ filters, pageNo, pageSize }) => {
+            async ({ filters, pageNo, pageSize, timeoutMs }) => {
               const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
               const token = access.accessToken || '';
               if (!token) {
@@ -458,9 +1290,12 @@ class BrowserOzonClient:
               }
               params.set('page', String(pageNo));
               params.set('page_size', String(pageSize));
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), timeoutMs);
               const response = await fetch(`https://api.maozierp.com/api.selection.top/lists?${params.toString()}`, {
                 method: 'GET',
                 credentials: 'include',
+                signal: controller.signal,
                 headers: {
                   'Accept': 'application/json, text/plain, */*',
                   'Authorization': `Bearer ${token}`,
@@ -469,6 +1304,7 @@ class BrowserOzonClient:
                   'DNT': '1'
                 }
               });
+              clearTimeout(timer);
               const text = await response.text();
               let data = null;
               try {
@@ -483,8 +1319,27 @@ class BrowserOzonClient:
               };
             }
             """,
-            {"filters": filters, "pageNo": int(page_no), "pageSize": int(page_size)},
+            {"filters": filters, "pageNo": int(page_no), "pageSize": int(page_size), "timeoutMs": 20000},
         )
+
+    def _ensure_maozi_selection_ready(self, page: Any) -> None:
+        if not page.url.startswith(MAOZI_SELECTION_ORIGIN):
+            page.goto(MAOZI_SELECTION_URL, wait_until="domcontentloaded", timeout=120000)
+            page.wait_for_timeout(1000)
+        challenge_text = str(
+            page.evaluate(
+                """
+                () => {
+                  const title = document.title || '';
+                  const body = document.body?.innerText || '';
+                  return `${title}\n${body}`.trim();
+                }
+                """
+            )
+            or ""
+        ).lower()
+        if any(marker.lower() in challenge_text for marker in MAOZI_CHALLENGE_MARKERS):
+            raise RuntimeError("maozierp Cloudflare challenge is active; manual verification is required")
 
     def _extension_popup_url(self) -> str:
         return f"chrome-extension://{self.extension_id}/popup.html"
@@ -526,6 +1381,21 @@ def detect_chrome_executable() -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def parse_chrome_version(value: str) -> str | None:
+    match = re.search(r"(?:Chrome|Chromium)[ /]([0-9]+(?:\.[0-9]+){1,3})", value or "")
+    if match:
+        return match.group(1)
+    return None
+
+
+def build_windows_chrome_user_agent(version: str) -> str:
+    normalized = version or "136.0.0.0"
+    return (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{normalized} Safari/537.36"
+    )
 
 
 def import_sync_playwright():
