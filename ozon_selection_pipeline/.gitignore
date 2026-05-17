@@ -16,3 +16,4 @@ vendor/
 # Temporary artifacts
 tmp-*.png
 *.log
+.gui_first_run

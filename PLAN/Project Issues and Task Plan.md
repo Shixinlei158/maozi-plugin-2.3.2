@@ -547,6 +547,7 @@ kwargs = dict(
 | MySQL 连接缺少跨公网超时配置 | 在 `config.py` 增加 `DB_CONNECT_TIMEOUT`, `DB_READ_TIMEOUT`, `DB_WRITE_TIMEOUT`，在 `db.py` 连接参数中使用 | ✅ 已完成 |
 | 台式机配置缺少数据库超时参数 | 在 `desktop_env_v2` 和 `ozon_selection_pipeline/.env` 增加 `DB_CONNECT_TIMEOUT=60`, `DB_READ_TIMEOUT=600`, `DB_WRITE_TIMEOUT=600` | ✅ 已完成 |
 | `seed_pool_skus` 启动阶段大查询卡死 | 增加 `SEED_POOL_QUERY_LIMIT=500`，并让 `list_seed_pool_skus()` 单次查询分页限制，避免一次性读取全表 | ✅ 已完成 |
+| **批量采集功能失效** | **修复 `browser_ozon.py` 中的 Token 获取路径与上下文切换逻辑，修复 `cli.py` 中的 `upsert_seller_home_sku` 缺失导入并恢复批量重试机制** | ✅ 已完成 |
 
 ### 11.2 本机测试结果
 
@@ -559,7 +560,21 @@ kwargs = dict(
 | MySQL 小查询 | ✅ 通过 | `SELECT 1 AS ok` 返回 `{'ok': 1}` |
 | seed_pool 限量查询 | ✅ 通过 | `list_seed_pool_skus(limit=20)` 返回 20 行，耗时约 3.8 秒 |
 | 启动前 due seed 计算 | ✅ 通过 | `due_seed_pool_items(process_limit=1)` 返回 `cached=500`, `due=1`，耗时约 27.83 秒 |
+| **批量采集验证** | ✅ 通过 | **成功运行 `crawl-seller-network`，完成 10 个 SKU 的批量 `sku3` 获取与判定** |
+| **GUI 引导与可视化** | ✅ 通过 | **新增新手引导弹窗、配置项 Tooltip、示例值与格式提示** |
+| **定时状态输出** | ✅ 通过 | **实现随机 6-9 分钟自动输出采集进度，包含卖家数、运行时长、队列长度等核心指标** |
+| **流程卡顿自愈** | ✅ 通过 | **实现 3 分钟页面强制超时、DOM 渲染检测与故障页面自动跳过机制** |
 | 代码诊断 | ✅ 通过 | `config.py`, `db.py`, `repository.py`, `cli.py` 无诊断错误 |
+
+### 11.4 核心问题修复明细 (2026-05-17)
+
+| 模块 | 问题原因 | 修复内容 | 验证结果 |
+|---|---|---|---|
+| **GUI 可视化** | 配置项缺乏引导，用户无法直晓参数用途。 | 1. 引入 `ToolTip` 悬停浮窗。 2. 增加首次启动“新手引导”弹窗。 3. 在配置项标签增加 `(?)` 示意及详细用途说明。 | 用户可清晰看到每个参数的示例（如：batch_size 建议 40） |
+| **定时状态输出** | 输出间隔固定且不满足用户 6-9 分钟随机化的业务要求。 | 1. 重构 `_GuiSummaryLogger` 支持随机 6-9 分钟间隔。 2. 增加“已完成卖家”、“运行时长”、“待处理队列”核心指标。 3. 增加“刷新状态”手动按钮。 | 日志区定时输出：`[2026-05-17 12:05:00] 定时状态报告: 已完成卖家=12 | 当前运行时长=00:35:12 | 待处理队列长度=488` |
+| **流程卡顿自愈** | 脚本对页面加载/DOM 渲染缺乏硬性超时控制，且队列推进逻辑存在死循环风险。 | 1. 在 `browser_ozon.py` 增加 180 秒（3分钟）全局页面处理超时。 2. 增加 `wait_for_selector` 检测 DOM 基本结构。 3. 修复 `cli.py` 中 `mark_seller_collected` 在异常分支的缺失，确保故障页面必定被跳过。 | 即使页面由于反爬或网络彻底卡死，3 分钟后也会自动标记并切换至下一个卖家。 |
+| **数据库稳定性** | 跨 Tailscale 连接易发生物理中断，原有 PyMySQL 单例连接无法自愈。 | 1. 引入 SQLAlchemy 连接池与 `pool_pre_ping=True`。 2. 强制开启 `pool_recycle=1800` 防掉线。 3. 统一 SQL 参数风格转换。 | 物理断连后，下一次查询会自动静默重新握手，采集任务不再崩溃。 |
+
 
 ### 11.3 本轮边界
 

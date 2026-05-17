@@ -1042,14 +1042,23 @@ class BrowserOzonClient:
         skus: list[str],
         concurrency: int,
     ) -> dict[str, dict[str, Any]]:
-        self._ensure_maozi_selection_ready(page)
+        target_url = self._extension_popup_url()
+        current_url = ""
+        try:
+            current_url = page.url or ""
+        except Exception:
+            current_url = ""
+        if current_url != target_url:
+            page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
+            page.wait_for_timeout(300)
+
         raw = page.evaluate(
             """
-            async ({ skus, concurrency, timeoutMs }) => {
-              const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
-              const token = access.accessToken || '';
+            async ({ skus, concurrency, timeoutMs, pluginVersion }) => {
+              const storage = await chrome.storage.local.get(["maozierp-token"]);
+              const token = storage["maozierp-token"];
               if (!token) {
-                throw new Error('maozierp-core-access.accessToken is missing');
+                throw new Error("maozierp-token is missing in chrome.storage.local");
               }
               const items = Array.from(new Set((skus || []).map((sku) => String(sku).trim()).filter(Boolean)));
               const results = {};
@@ -1067,12 +1076,12 @@ class BrowserOzonClient:
                     headers: {
                       'Accept': 'application/json, text/plain, */*',
                       'Authorization': `Bearer ${token}`,
-                      'Client': 'pc',
-                      'X-Client-Type': 'pc',
+                      'Client': 'plugin',
+                      'Plugin-Version': pluginVersion,
                       'Content-Type': 'application/json',
-                      'DNT': '1'
+                      'User-Agent': 'Mozilla/5.0'
                     },
-                    body: JSON.stringify({ sku })
+                    body: JSON.stringify({ sku: String(sku) })
                   });
                   const text = await response.text();
                   let data = null;
@@ -1117,6 +1126,7 @@ class BrowserOzonClient:
                 "skus": [str(sku) for sku in skus],
                 "concurrency": int(concurrency),
                 "timeoutMs": min(max(settings.request_timeout_seconds * 1000, 5000), 30000),
+                "pluginVersion": settings.maozi_plugin_version,
             },
         )
         if not isinstance(raw, dict):
@@ -1157,16 +1167,31 @@ class BrowserOzonClient:
         return card
 
     def _fetch_seller_home_products(self, page: Any, seller_url: str, max_scrolls: int = 8) -> dict[str, Any]:
+        # Implementation of 3-minute global timeout for single seller page
+        deadline = time.time() + 180  # 3 minutes
         try:
-            return self._fetch_seller_home_products_api(page, seller_url)
-        except Exception:
+            return self._fetch_seller_home_products_api(page, seller_url, deadline=deadline)
+        except Exception as exc:
+            if time.time() > deadline:
+                raise RuntimeError(f"Seller page processing timed out (3min limit): {seller_url}") from exc
+            # Fallback to DOM scroll if API failed but time remains
             pass
-        return self._fetch_seller_home_products_dom(page, seller_url, max_scrolls=max_scrolls)
+        return self._fetch_seller_home_products_dom(page, seller_url, max_scrolls=max_scrolls, deadline=deadline)
 
-    def _fetch_seller_home_products_api(self, page: Any, seller_url: str) -> dict[str, Any]:
+    def _fetch_seller_home_products_api(self, page: Any, seller_url: str, deadline: float | None = None) -> dict[str, Any]:
         # Directly navigate to the seller URL to provide visual feedback and satisfy origin requirements
         if page.url != seller_url:
-            page.goto(seller_url, wait_until="domcontentloaded", timeout=120000)
+            remaining = (deadline - time.time()) * 1000 if deadline else 120000
+            if remaining <= 0:
+                raise RuntimeError("Timeout before navigation")
+            page.goto(seller_url, wait_until="domcontentloaded", timeout=min(remaining, 120000))
+            
+            # Verify basic DOM structure - ensures we aren't stuck on an empty or error page
+            try:
+                page.wait_for_selector('div, a, span', timeout=5000)
+            except Exception:
+                raise RuntimeError(f"Page loaded but no basic elements found (empty/error): {seller_url}")
+                
             # Give it a short wait to let basic DOM/anti-bot settle before hitting the API
             page.wait_for_timeout(2000)
             
@@ -1177,33 +1202,46 @@ class BrowserOzonClient:
         pages_fetched = 0
         next_path: str | None = seller_path
         while next_path and next_path not in seen_paths and pages_fetched < 100:
+            if deadline and time.time() > deadline:
+                break # Partial results better than total failure
+                
             seen_paths.add(next_path)
             raw = page.evaluate(
                 """
                 async ({ sellerPath, timeoutMs }) => {
                   const controller = new AbortController();
                   const timer = setTimeout(() => controller.abort(), timeoutMs);
-                  const response = await fetch(`/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(sellerPath)}`, {
-                    credentials: "include",
-                    signal: controller.signal
-                  });
-                  clearTimeout(timer);
-                  return {
-                    ok: response.ok,
-                    status: response.status,
-                    text: await response.text(),
-                  };
+                  try {
+                    const response = await fetch(`/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(sellerPath)}`, {
+                      credentials: "include",
+                      signal: controller.signal
+                    });
+                    clearTimeout(timer);
+                    return {
+                      ok: response.ok,
+                      status: response.status,
+                      text: await response.text(),
+                    };
+                  } catch (e) {
+                    return { ok: false, status: 0, text: String(e) };
+                  }
                 }
                 """,
                 {"sellerPath": next_path, "timeoutMs": 15000},
             )
             if not raw.get("ok"):
+                # If API fails, we might want to break and try DOM fallback
                 raise RuntimeError(f"seller home api request failed with HTTP {raw.get('status')}")
+            
             import json
-
             data = json.loads(raw["text"])
             parsed = parse_seller_home_page(data)
-            for item in parsed.get("items") or []:
+            items = parsed.get("items") or []
+            if not items and pages_fetched == 0:
+                # If first page is empty via API, something is wrong
+                raise RuntimeError("API returned empty items on first page")
+                
+            for item in items:
                 sku = str(item.get("sku") or "")
                 key = sku or str(item.get("href") or item.get("product_url") or "")
                 if not key or key in seen_skus:
@@ -1212,6 +1250,7 @@ class BrowserOzonClient:
                 all_items.append(item)
             next_path = parsed.get("next_page")
             pages_fetched += 1
+            
         return {
             "page_url": seller_url,
             "page_title": page.title(),
@@ -1221,17 +1260,28 @@ class BrowserOzonClient:
             "pages_fetched": pages_fetched,
         }
 
-    def _fetch_seller_home_products_dom(self, page: Any, seller_url: str, max_scrolls: int = 8) -> dict[str, Any]:
-        page.goto(seller_url, wait_until="domcontentloaded", timeout=120000)
+    def _fetch_seller_home_products_dom(self, page: Any, seller_url: str, max_scrolls: int = 8, deadline: float | None = None) -> dict[str, Any]:
+        remaining = (deadline - time.time()) * 1000 if deadline else 120000
+        if remaining <= 0:
+            raise RuntimeError("Timeout before DOM navigation")
+            
+        page.goto(seller_url, wait_until="domcontentloaded", timeout=min(remaining, 120000))
         page.wait_for_timeout(3000)
+        
         for _ in range(max_scrolls):
+            if deadline and time.time() > deadline:
+                break
             page.mouse.wheel(0, 5000)
             page.wait_for_timeout(1200)
+            
         raw = page.evaluate(
             """
             () => {
               const map = new Map();
-              for (const a of Array.from(document.querySelectorAll('a[href*="/product/"]'))) {
+              const products = Array.from(document.querySelectorAll('a[href*="/product/"]'));
+              if (products.length === 0) return null;
+              
+              for (const a of products) {
                 const href = a.href;
                 if (!href) continue;
                 const text = (a.textContent || '').trim();
@@ -1265,6 +1315,9 @@ class BrowserOzonClient:
             }
             """
         )
+        if not raw:
+            raise RuntimeError(f"DOM scroll failed to find any products on {seller_url}")
+            
         raw["source"] = "dom_scroll"
         return raw
 

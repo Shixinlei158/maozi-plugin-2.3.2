@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import requests
@@ -37,3 +38,39 @@ class MaoziClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def sku3_batch(self, skus: list[str], concurrency: int = 12) -> dict[str, dict[str, Any]]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for sku in skus:
+            text = str(sku).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        if not normalized:
+            return {}
+
+        results: dict[str, dict[str, Any]] = {}
+        errors: list[str] = []
+        worker_total = max(1, min(int(concurrency or 1), len(normalized)))
+
+        with ThreadPoolExecutor(max_workers=worker_total) as executor:
+            futures = {executor.submit(self.sku3, sku): sku for sku in normalized}
+            for future in as_completed(futures):
+                sku = futures[future]
+                try:
+                    results[sku] = future.result()
+                except Exception as exc:
+                    errors.append(f"{sku}:{_summarize_exception(exc)}")
+
+        if errors and not results:
+            raise RuntimeError(f"maozi direct batch failed for all skus: {'; '.join(errors[:3])}")
+        return results
+
+
+def _summarize_exception(exc: Exception) -> str:
+    text = str(exc).strip().replace("\r", " ").replace("\n", " ")
+    if len(text) > 180:
+        return text[:177] + "..."
+    return text or exc.__class__.__name__

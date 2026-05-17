@@ -3,26 +3,56 @@ from __future__ import annotations
 import json
 import os
 import queue
+import random
 import sys
 import threading
 import tkinter as tk
 import traceback
 from argparse import Namespace
 from datetime import datetime, timedelta
-from tkinter import Frame, Label, Button, Entry, ttk, messagebox, scrolledtext, BooleanVar, StringVar
+from tkinter import Frame, Label, Button, Entry, ttk, messagebox, scrolledtext, BooleanVar, StringVar, Toplevel
 from typing import Any
 
 from .browser_ozon import BrowserOzonClient
 from .config import settings, ROOT_DIR
 
 GUI_CONFIG_FILE = ROOT_DIR / "gui_config.json"
+GUI_FIRST_RUN_FILE = ROOT_DIR / ".gui_first_run"
+
+class ToolTip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        widget.bind("<Enter>", self.show_tip)
+        widget.bind("<Leave>", self.hide_tip)
+
+    def show_tip(self, event=None):
+        if self.tip_window or not self.text:
+            return
+        x, y, cx, cy = self.widget.bbox("insert")
+        x = x + self.widget.winfo_rootx() + 25
+        y = y + cy + self.widget.winfo_rooty() + 25
+        self.tip_window = tw = Toplevel(self.widget)
+        tw.wm_overrideredirect(1)
+        tw.wm_geometry("+%d+%d" % (x, y))
+        label = Label(tw, text=self.text, justify="left",
+                      background="#ffffe0", relief="solid", borderwidth=1,
+                      font=("Microsoft YaHei", "8", "normal"))
+        label.pack(ipadx=1)
+
+    def hide_tip(self, event=None):
+        tw = self.tip_window
+        self.tip_window = None
+        if tw:
+            tw.destroy()
 
 class _GuiSummaryLogger:
-    def __init__(self, queue: queue.Queue[str], interval_seconds: int = 300):
+    def __init__(self, queue: queue.Queue[str]):
         self._queue = queue
         self._buffer = ""
-        self._interval = timedelta(seconds=interval_seconds)
-        self._next_summary_at = datetime.now() + self._interval
+        self._start_time = datetime.now()
+        self._set_next_interval()
         self._seller_count = 0
         self._raw_skus = 0
         self._processed_skus = 0
@@ -32,6 +62,7 @@ class _GuiSummaryLogger:
         self._skipped_skus = 0
         self._offers = 0
         self._last_seller = ""
+        self._queue_length = 0
         self._important_prefixes = (
             "=====",
             "browser mode:",
@@ -41,11 +72,19 @@ class _GuiSummaryLogger:
             "expand-network empty",
             "expand-network final summary",
             "expand-network: no new sellers",
+            "crawl seller:",
+            "seller summary:",
+            "  qualified sku:",
             "skip seller",
             "manual action required",
             "error:",
             "Traceback",
         )
+
+    def _set_next_interval(self):
+        # 6-9 minutes random interval
+        interval_minutes = random.uniform(6, 9)
+        self._next_summary_at = datetime.now() + timedelta(minutes=interval_minutes)
 
     def write(self, text: str) -> None:
         self._buffer += text
@@ -71,18 +110,22 @@ class _GuiSummaryLogger:
             self._queue.put(stripped + "\n")
             return
         if now >= self._next_summary_at:
-            self._emit_summary(now)
+            self.emit_summary(now)
 
     def _should_emit(self, line: str) -> bool:
         return line.startswith(self._important_prefixes)
 
     def _update_counters(self, line: str) -> None:
         if line.startswith("crawl seller:"):
-            self._seller_count += 1
+            # 不在这里增加已完成卖家，仅记录发现的SKU数
             self._last_seller = line.split("|", 1)[0].replace("crawl seller:", "").strip()
             self._raw_skus += self._int_after(line, "items=")
             return
+        if line.startswith("expand-network round") and "due:" in line:
+            self._queue_length = self._int_after(line, "fetched=")
+            return
         if line.startswith("seller summary:"):
+            self._seller_count += 1  # 卖家完全处理结束后才 +1
             self._processed_skus += self._int_after(line, "skus=")
             self._qualified_skus += self._int_after(line, "qualified=")
             self._rejected_skus += self._int_after(line, "rejected=")
@@ -91,27 +134,28 @@ class _GuiSummaryLogger:
             self._offers += self._int_after(line, "offers=")
             return
         if line.startswith("expand-network final summary:"):
-            self._emit_summary(datetime.now(), force=True)
+            self.emit_summary(datetime.now(), force=True)
 
-    def _emit_summary(self, now: datetime, force: bool = False) -> None:
+    def emit_summary(self, now: datetime, force: bool = False) -> None:
         if not force and self._seller_count == 0 and self._processed_skus == 0:
-            self._next_summary_at = now + self._interval
+            self._set_next_interval()
             return
+        
+        runtime = now - self._start_time
+        hours, remainder = divmod(int(runtime.total_seconds()), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        runtime_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
         parts = [
-            f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] GUI汇总:",
-            f"卖家={self._seller_count}",
-            f"主页SKU={self._raw_skus}",
-            f"已筛选SKU={self._processed_skus}",
-            f"达标={self._qualified_skus}",
-            f"淘汰={self._rejected_skus}",
-            f"暂缓={self._deferred_skus}",
-            f"跳过={self._skipped_skus}",
-            f"跟卖={self._offers}",
+            f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 定时状态报告:",
+            f"已完成卖家={self._seller_count}",
+            f"当前运行时长={runtime_str}",
+            f"待处理队列长度={self._queue_length}",
+            f"达标SKU={self._qualified_skus}",
+            f"淘汰SKU={self._rejected_skus}",
         ]
-        if self._last_seller:
-            parts.append(f"当前/最近卖家={self._last_seller}")
-        self._queue.put(" | ".join(parts) + "\n")
-        self._next_summary_at = now + self._interval
+        self._queue.put("\n" + " | ".join(parts) + "\n\n")
+        self._set_next_interval()
 
     @staticmethod
     def _int_after(line: str, key: str) -> int:
@@ -133,9 +177,9 @@ class _GuiSummaryLogger:
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Ozon 采集控制台 (优化版)")
-        self.root.geometry("1100x780")
-        self.root.minsize(960, 680)
+        self.root.title("Ozon 采集控制台 (v2.3.2 专业版)")
+        self.root.geometry("1100x820")
+        self.root.minsize(960, 720)
         self.root.configure(bg="#f5f6fa")
 
         self._stop_flag = threading.Event()
@@ -155,6 +199,43 @@ class App:
         self._poll_status()
         self._start_log_poller()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        
+        self.root.after(1000, self._check_first_run)
+
+    def _check_first_run(self):
+        if not GUI_FIRST_RUN_FILE.exists():
+            self._show_novice_guide()
+            try:
+                GUI_FIRST_RUN_FILE.touch()
+            except Exception:
+                pass
+
+    def _show_novice_guide(self):
+        guide = Toplevel(self.root)
+        guide.title("新手使用引导")
+        guide.geometry("500x400")
+        guide.resizable(False, False)
+        guide.transient(self.root)
+        guide.grab_set()
+        
+        Frame(guide, height=20, bg="#f5f6fa").pack()
+        Label(guide, text="欢迎使用 Ozon 采集系统！", font=("Microsoft YaHei", 14, "bold")).pack(pady=10)
+        
+        steps = [
+            "1. 顶部状态栏：实时检测 CDP 浏览器和数据库连接状态。",
+            "2. 采集模式：推荐使用'卖家列表循环扩充'，收益最高。",
+            "3. 参数配置：鼠标悬停在配置项名称上可查看详细用途及示例。",
+            "4. 启动采集：先'启动浏览器'，确认 CDP 已连接后再点击'开始采集'。",
+            "5. 定时报告：系统每 6-9 分钟会自动输出运行统计到日志区。"
+        ]
+        
+        f = Frame(guide, padx=30)
+        f.pack(fill="both", expand=True)
+        for step in steps:
+            Label(f, text=step, font=("Microsoft YaHei", 10), justify="left", wraplength=440, pady=5).pack(anchor="w")
+            
+        Button(guide, text="我知道了", command=guide.destroy, bg="#3498db", fg="white", 
+               font=("Microsoft YaHei", 10, "bold"), width=15, pady=5).pack(pady=20)
 
     def _build_ui(self):
         try:
@@ -226,34 +307,51 @@ class App:
         self._notebook.add(tab_adv, text="模式专属配置")
 
         # Tab 1: 核心调度
-        self._add_param(tab_core, 0, 0, "每轮处理上限 (process_limit)", "process_limit", "100", "int", min_val=1, max_val=10000)
-        self._add_param(tab_core, 0, 1, "最大爬取深度 (max_depth)", "max_depth", "-1", "int", min_val=-1, max_val=100, tooltip="-1表示无限")
-        self._add_param(tab_core, 1, 0, "最大卖家数 (max_sellers)", "max_sellers", "0", "int", min_val=0, max_val=100000, tooltip="0表示无限")
-        self._add_param(tab_core, 1, 1, "单店SKU上限 (sku_limit)", "sku_limit", "0", "int", min_val=0, max_val=100000, tooltip="0表示提取全部")
-        self._add_param(tab_core, 2, 0, "卖家页最大滚动 (max_scrolls)", "max_scrolls", "8", "int", min_val=0, max_val=50)
+        self._add_param(tab_core, 0, 0, "每轮处理上限 (process_limit)", "process_limit", "100", "int", min_val=1, max_val=10000, 
+                       tooltip="每轮任务最多处理的SKU或卖家数量。示例：100")
+        self._add_param(tab_core, 0, 1, "最大爬取深度 (max_depth)", "max_depth", "-1", "int", min_val=-1, max_val=100, 
+                       tooltip="-1表示无限递归；0表示仅处理当前列表；1表示处理跟卖卖家。示例：1")
+        self._add_param(tab_core, 1, 0, "最大卖家数 (max_sellers)", "max_sellers", "0", "int", min_val=0, max_val=100000, 
+                       tooltip="本次运行累计最多访问的卖家数量。0表示不限制。示例：50")
+        self._add_param(tab_core, 1, 1, "单店SKU上限 (sku_limit)", "sku_limit", "0", "int", min_val=0, max_val=100000, 
+                       tooltip="从每个卖家主页提取的SKU最大数量。0表示全部提取。示例：200")
+        self._add_param(tab_core, 2, 0, "卖家页最大滚动 (max_scrolls)", "max_scrolls", "8", "int", min_val=0, max_val=50,
+                       tooltip="若API失效回退到DOM模式时，页面的滚动次数。示例：8")
 
         # Tab 2: 并发控制
-        self._add_param(tab_conc, 0, 0, "SKU3 批量大小 (batch_size)", "batch_size", str(settings.top_list_sku3_batch_size), "int", min_val=1, max_val=100)
-        self._add_param(tab_conc, 0, 1, "SKU3 批内并发 (concurrency)", "concurrency", str(settings.top_list_sku3_batch_concurrency), "int", min_val=1, max_val=50)
-        self._add_param(tab_conc, 1, 0, "批次间延迟ms (chunk_delay_ms)", "chunk_delay_ms", str(settings.top_list_sku3_batch_chunk_delay_ms), "int", min_val=0, max_val=10000)
-        self._add_param(tab_conc, 2, 0, "卖家SKU线程数 (seller_sku_workers)", "seller_sku_workers", str(settings.seller_sku_workers), "int", min_val=1, max_val=32)
-        self._add_param(tab_conc, 2, 1, "种子SKU线程数 (seed_sku_workers)", "seed_sku_workers", str(settings.seed_sku_workers), "int", min_val=1, max_val=32)
+        self._add_param(tab_conc, 0, 0, "SKU3 批量大小 (batch_size)", "batch_size", str(settings.top_list_sku3_batch_size), "int", min_val=1, max_val=100,
+                       tooltip="单次请求sku3接口的SKU数量。建议：40")
+        self._add_param(tab_conc, 0, 1, "SKU3 批内并发 (concurrency)", "concurrency", str(settings.top_list_sku3_batch_concurrency), "int", min_val=1, max_val=50,
+                       tooltip="批次内部同时发起的fetch请求数。建议：12")
+        self._add_param(tab_conc, 1, 0, "批次间延迟ms (chunk_delay_ms)", "chunk_delay_ms", str(settings.top_list_sku3_batch_chunk_delay_ms), "int", min_val=0, max_val=10000,
+                       tooltip="每组批量请求之间的休眠时间。建议：500")
+        self._add_param(tab_conc, 2, 0, "卖家SKU线程数 (seller_sku_workers)", "seller_sku_workers", str(settings.seller_sku_workers), "int", min_val=1, max_val=32,
+                       tooltip="并行处理卖家主页SKU的本地线程数。示例：4")
+        self._add_param(tab_conc, 2, 1, "种子SKU线程数 (seed_sku_workers)", "seed_sku_workers", str(settings.seed_sku_workers), "int", min_val=1, max_val=32,
+                       tooltip="并行处理种子池SKU的本地线程数。示例：8")
 
         # Tab 3: 高级与特定模式
         # 种子池组
         lf_seed = tk.LabelFrame(tab_adv, text="种子池专属配置", bg="#ffffff", padx=8, pady=8)
         lf_seed.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
-        self._add_param(lf_seed, 0, 0, "强制重试失败项", "retry_failed_now", False, "bool")
-        self._add_param(lf_seed, 0, 1, "强制重试暂缓项", "retry_deferred_now", False, "bool")
-        self._add_param(lf_seed, 1, 0, "种子来源过滤", "source_type", "top_list", "str")
+        self._add_param(lf_seed, 0, 0, "强制重试失败项", "retry_failed_now", False, "bool", 
+                       tooltip="勾选后将重试状态为failed的任务")
+        self._add_param(lf_seed, 0, 1, "强制重试暂缓项", "retry_deferred_now", False, "bool",
+                       tooltip="勾选后将重试状态为deferred的任务")
+        self._add_param(lf_seed, 1, 0, "种子来源过滤", "source_type", "top_list", "str",
+                       tooltip="过滤特定来源的种子。可选：top_list, manual")
 
         # 榜单组
         lf_top = tk.LabelFrame(tab_adv, text="榜单采集专属配置", bg="#ffffff", padx=8, pady=8)
         lf_top.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
-        self._add_param(lf_top, 0, 0, "榜单类型 (main_type)", "main_type", "hot", "str")
-        self._add_param(lf_top, 0, 1, "每页数量 (page_size)", "page_size", "50", "int", min_val=1, max_val=100)
-        self._add_param(lf_top, 1, 0, "起始页码 (page_from)", "page_from", "1", "int", min_val=1, max_val=1000)
-        self._add_param(lf_top, 1, 1, "结束页码 (page_to)", "page_to", "10", "int", min_val=1, max_val=1000)
+        self._add_param(lf_top, 0, 0, "榜单类型 (main_type)", "main_type", "hot", "str",
+                       tooltip="毛子榜单分类。可选：hot, new, potential")
+        self._add_param(lf_top, 0, 1, "每页数量 (page_size)", "page_size", "50", "int", min_val=1, max_val=100,
+                       tooltip="榜单单页请求条数。示例：50")
+        self._add_param(lf_top, 1, 0, "起始页码 (page_from)", "page_from", "1", "int", min_val=1, max_val=1000,
+                       tooltip="从第几页开始采集。示例：1")
+        self._add_param(lf_top, 1, 1, "结束页码 (page_to)", "page_to", "10", "int", min_val=1, max_val=1000,
+                       tooltip="采集到第几页停止。示例：10")
 
         # 按钮区
         btn_frame = Frame(control_panel, bg="#ffffff")
@@ -270,6 +368,12 @@ class App:
             width=12, padx=8, pady=4, command=self._start_collection, relief="flat"
         )
         self._start_btn.pack(side="left", padx=(0, 8))
+
+        self._refresh_btn = Button(
+            btn_frame, text="↻ 刷新状态", bg="#3498db", fg="white", font=("Microsoft YaHei", 10),
+            width=10, padx=8, pady=4, command=self._manual_refresh_status, relief="flat"
+        )
+        self._refresh_btn.pack(side="left", padx=(0, 8))
 
         self._stop_btn = Button(
             btn_frame, text="■ 停止采集", bg="#e74c3c", fg="white", font=("Microsoft YaHei", 10, "bold"),
@@ -313,10 +417,13 @@ class App:
         
         lbl_text = label
         if tooltip:
-            lbl_text += f" (?)"
+            lbl_text += " (?)"
             
-        lbl = Label(frame, text=lbl_text, bg="#ffffff", font=("Microsoft YaHei", 9))
+        lbl = Label(frame, text=lbl_text, bg="#ffffff", font=("Microsoft YaHei", 9), cursor="question_arrow")
         lbl.pack(side="left", padx=(0, 4))
+        
+        if tooltip:
+            ToolTip(lbl, tooltip)
         
         if ptype == "bool":
             var = BooleanVar(value=bool(default))
@@ -324,7 +431,7 @@ class App:
             ent.pack(side="left")
         else:
             var = StringVar(value=str(default))
-            ent = Entry(frame, textvariable=var, width=12, font=("Consolas", 9))
+            ent = Entry(frame, textvariable=var, width=12, font=("Consolas", 9), relief="sunken", bd=1)
             ent.pack(side="left")
             
             # Save validation rules
@@ -332,6 +439,13 @@ class App:
 
         self._param_widgets[key] = ent
         self._param_vars[key] = var
+
+    def _manual_refresh_status(self):
+        if self._logger:
+            self._logger.emit_summary(datetime.now(), force=True)
+            self._append_log(">>> 已手动触发采集状态刷新\n")
+        else:
+            self._append_log(">>> 采集未运行，无法刷新状态\n")
 
     def _update_linkages(self):
         mode = self._mode_var.get()

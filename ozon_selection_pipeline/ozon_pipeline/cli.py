@@ -18,6 +18,7 @@ from .ozon_frontend import OzonFrontendClient
 from .repository import (
     finish_top_list_run,
     bulk_upsert_seller_home_skus,
+    upsert_seller_home_sku,
     get_seller_shop,
     get_recent_top_list_run,
     list_due_seller_shops,
@@ -263,7 +264,7 @@ def cmd_fetch_offers(args: argparse.Namespace) -> None:
 def cmd_fetch_seller_home(args: argparse.Namespace) -> None:
     client = build_browser_client(args)
     with client.session():
-        result = client.seller_home_products(args.url, max_scrolls=args.max_scrolls)
+        result = load_seller_home_products(args.url, client, max_scrolls=args.max_scrolls)
     items = result.get("items") or []
     saved = 0
     for item in items:
@@ -342,7 +343,7 @@ def run_seller_network(
             continue
 
         try:
-            result = browser.seller_home_products(url, max_scrolls=max_scrolls)
+            result = load_seller_home_products(url, browser, max_scrolls=max_scrolls)
             items = result.get("items") or []
             source = result.get("source") or "unknown"
             vlog(
@@ -426,6 +427,7 @@ def run_seller_network(
             try:
                 seller_prefetched_maozi = prefetch_top_list_maozi_batch(
                     [sku for sku, _ in prepared_items],
+                    maozi=maozi,
                     browser=browser,
                 )
                 vlog(
@@ -462,6 +464,14 @@ def run_seller_network(
                 },
                 prefix="seller",
             )
+            mark_seller_collected(key)
+            processed_sellers += 1
+            continue
+
+        if not prepared_items:
+            vlog("seller-home no items found/saved, skipping completion", f"seller={url}", prefix="seller")
+            mark_seller_collected(key)
+            processed_sellers += 1
             continue
 
         def process_seller_home_item(entry: tuple[str, dict[str, Any]]) -> dict[str, Any] | None:
@@ -895,6 +905,7 @@ def expand_seed_pool_items(
             try:
                 batch_prefetched = prefetch_top_list_maozi_batch(
                     batch_targets,
+                    maozi=maozi,
                     browser=browser,
                 )
                 hydrated_work_items: list[tuple[str, dict[str, Any], list[dict[str, Any]], tuple[dict[str, Any], str] | None]] = []
@@ -1148,10 +1159,18 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
         except ManualInterventionRequired as exc:
             log_line("manual action required:", exc, prefix="manual")
             log_line(
-                "the browser window will stay open; complete the challenge and press Enter to continue retrying due seeds.",
+                "the browser window will stay open; complete the challenge to continue.",
                 prefix="manual",
             )
-            input()
+            import sys
+            if not sys.stdin.isatty():
+                time.sleep(30)
+            else:
+                log_line("press Enter in console to continue...", prefix="manual")
+                try:
+                    input()
+                except EOFError:
+                    time.sleep(30)
             retry_failed_now = True
     seller_stats = stats["seller_stats"]
     print(
@@ -1232,10 +1251,20 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
         except ManualInterventionRequired as exc:
             log_line("manual action required:", exc, prefix="manual")
             log_line(
-                "the browser window will stay open; complete the challenge and press Enter to continue retrying due sellers.",
+                "the browser window will stay open; complete the challenge to continue.",
                 prefix="manual",
             )
-            input()
+            # In GUI/non-TTY mode, input() would hang forever. 
+            # We wait for a bit and then retry instead of blocking on stdin.
+            import sys
+            if not sys.stdin.isatty():
+                time.sleep(30)
+            else:
+                log_line("press Enter in console to continue...", prefix="manual")
+                try:
+                    input()
+                except EOFError:
+                    time.sleep(30)
             continue
 
         round_no += 1
@@ -1483,28 +1512,27 @@ def add_top_list_options(parser: argparse.ArgumentParser) -> None:
 
 
 def load_seller_offers(sku: str, browser: BrowserOzonClient) -> list[dict[str, Any]]:
-    if browser.cdp_url:
-        return browser.seller_offers(sku)
     try:
         return OzonFrontendClient().seller_offers(sku)
     except Exception:
         return browser.seller_offers(sku)
 
 
+def load_seller_home_products(seller_url: str, browser: BrowserOzonClient, *, max_scrolls: int = 8) -> dict[str, Any]:
+    try:
+        return OzonFrontendClient().seller_home_products(seller_url)
+    except Exception:
+        return browser.seller_home_products(seller_url, max_scrolls=max_scrolls)
+
+
+def load_product_snapshot(sku: str, browser: BrowserOzonClient) -> dict[str, Any]:
+    try:
+        return OzonFrontendClient().product_snapshot(sku)
+    except Exception:
+        return browser.product_snapshot(sku)
+
+
 def load_maozi_sku3(sku: str, maozi: MaoziClient, browser: BrowserOzonClient, *, prefer_direct: bool) -> tuple[dict[str, Any], str]:
-    if prefer_direct:
-        try:
-            return maozi.sku3(sku), "direct_api"
-        except Exception as direct_exc:
-            try:
-                return browser.maozi_sku3(sku), "extension_page"
-            except Exception as browser_exc:
-                raise RuntimeError(
-                    f"direct api failed: {summarize_exception(direct_exc)}; "
-                    f"browser extension failed: {summarize_exception(browser_exc)}"
-                ) from browser_exc
-    if browser.cdp_url:
-        return browser.maozi_sku3(sku), "extension_page"
     try:
         return maozi.sku3(sku), "direct_api"
     except Exception as direct_exc:
@@ -1518,21 +1546,6 @@ def load_maozi_sku3(sku: str, maozi: MaoziClient, browser: BrowserOzonClient, *,
 
 
 def load_top_list_maozi_sku3(sku: str, maozi: MaoziClient, browser: BrowserOzonClient) -> tuple[dict[str, Any], str]:
-    if browser.cdp_url:
-        try:
-            return browser.top_list_sku3(sku), "top_list_page"
-        except Exception as site_exc:
-            try:
-                return maozi.sku3(sku), "direct_api"
-            except Exception as direct_exc:
-                try:
-                    return browser.maozi_sku3(sku), "extension_page"
-                except Exception as browser_exc:
-                    raise RuntimeError(
-                        f"top-list page failed: {summarize_exception(site_exc)}; "
-                        f"direct api failed: {summarize_exception(direct_exc)}; "
-                        f"browser extension failed: {summarize_exception(browser_exc)}"
-                    ) from browser_exc
     try:
         return maozi.sku3(sku), "direct_api"
     except Exception as direct_exc:
@@ -1552,6 +1565,7 @@ def load_top_list_maozi_sku3(sku: str, maozi: MaoziClient, browser: BrowserOzonC
 def prefetch_top_list_maozi_batch(
     skus: list[str],
     *,
+    maozi: MaoziClient | None = None,
     browser: BrowserOzonClient,
     batch_size: int | None = None,
     concurrency: int | None = None,
@@ -1563,21 +1577,69 @@ def prefetch_top_list_maozi_batch(
     prefetched: dict[str, tuple[dict[str, Any], str]] = {}
     for index in range(0, len(skus), resolved_batch_size):
         chunk = skus[index : index + resolved_batch_size]
-        start = datetime.now()
-        raw = browser.top_list_sku3_batch(chunk, concurrency=resolved_concurrency)
-        elapsed_ms = int((datetime.now() - start).total_seconds() * 1000)
+        
+        max_retries = 3
+        retry_delay_seconds = 0.5
+        raw = {}
+        for retry_idx in range(max_retries + 1):
+            start = datetime.now()
+            try:
+                if maozi is not None:
+                    raw = maozi.sku3_batch(chunk, concurrency=resolved_concurrency)
+                    source = "direct_api_batch"
+                else:
+                    raw = browser.top_list_sku3_batch(chunk, concurrency=resolved_concurrency)
+                    source = "top_list_batch"
+                elapsed_ms = int((datetime.now() - start).total_seconds() * 1000)
+                vlog(
+                    "top-list batch sku3:",
+                    f"chunk_start={index}",
+                    f"chunk_size={len(chunk)}",
+                    f"succeeded={len(raw)}",
+                    f"missing={len(chunk) - len(raw)}",
+                    f"concurrency={resolved_concurrency}",
+                    f"elapsed_ms={elapsed_ms}",
+                    f"retry_used={retry_idx}",
+                    prefix="top-list",
+                )
+                break
+            except Exception as exc:
+                elapsed_ms = int((datetime.now() - start).total_seconds() * 1000)
+                if retry_idx < max_retries:
+                    vlog(
+                        "top-list batch sku3 retryable error:",
+                        f"chunk_start={index}",
+                        f"chunk_size={len(chunk)}",
+                        f"retry={retry_idx + 1}/{max_retries}",
+                        f"error={summarize_exception(exc)}",
+                        f"elapsed_ms={elapsed_ms}",
+                        prefix="top-list",
+                    )
+                    time.sleep(retry_delay_seconds)
+                else:
+                    if maozi is not None:
+                        vlog(
+                            "top-list direct batch failed, falling back to browser:",
+                            f"chunk_start={index}",
+                            f"error={exc}",
+                            f"elapsed_ms={elapsed_ms}",
+                            prefix="top-list",
+                        )
+                        raw = browser.top_list_sku3_batch(chunk, concurrency=resolved_concurrency)
+                        source = "top_list_batch"
+                    else:
+                        vlog(
+                            "top-list batch sku3 failed permanently:",
+                            f"chunk_start={index}",
+                            f"error={exc}",
+                            f"elapsed_ms={elapsed_ms}",
+                            prefix="top-list",
+                        )
+                        raise
+
         for chunk_sku, response in raw.items():
-            prefetched[str(chunk_sku)] = (response, "top_list_batch")
-        vlog(
-            "top-list batch sku3:",
-            f"chunk_start={index}",
-            f"chunk_size={len(chunk)}",
-            f"succeeded={len(raw)}",
-            f"missing={len(chunk) - len(raw)}",
-            f"concurrency={resolved_concurrency}",
-            f"elapsed_ms={elapsed_ms}",
-            prefix="top-list",
-        )
+            prefetched[str(chunk_sku)] = (response, source)
+        
         next_chunk_start = index + resolved_batch_size
         if next_chunk_start < len(skus) and settings.top_list_sku3_batch_chunk_delay_ms > 0:
             delay_seconds = settings.top_list_sku3_batch_chunk_delay_ms / 1000.0
@@ -1849,38 +1911,15 @@ def process_sku(
     vlog("process_sku start:", f"sku={sku}", f"source={source}", f"batch_only={batch_only_mode}", prefix="sku")
     if prefetched_maozi is not None:
         response, maozi_source = prefetched_maozi
-    elif browser.cdp_url:
-        try:
-            response = browser.maozi_sku3(sku)
-            maozi_source = "extension_page"
-        except Exception as browser_exc:
-            try:
-                response = maozi.sku3(sku)
-                maozi_source = "direct_api"
-            except Exception as api_exc:
-                detail = summarize_exception(api_exc) or summarize_exception(browser_exc)
-                raise RuntimeError(
-                    f"failed to fetch maozi sku3 for sku {sku}; "
-                    "the extension popup is likely not logged in and direct API fallback was also rejected"
-                    + (f"; {detail}" if detail else "")
-                ) from api_exc
     else:
-        maozi_source = "direct_api"
         try:
-            response = maozi.sku3(sku)
-        except Exception as api_exc:
-            try:
-                response = browser.maozi_sku3(sku)
-                maozi_source = "extension_page"
-            except Exception as browser_exc:
-                detail = summarize_exception(browser_exc) or summarize_exception(api_exc)
-                raise RuntimeError(
-                    f"failed to fetch maozi sku3 for sku {sku}; "
-                    "direct API and browser-extension fallback both failed"
-                    + (f"; {detail}" if detail else "")
-                ) from browser_exc
+            response, maozi_source = load_maozi_sku3(sku, maozi, browser, prefer_direct=True)
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to fetch maozi sku3 for sku {sku}; {summarize_exception(exc)}"
+            ) from exc
     vlog("sku maozi source:", f"sku={sku}", f"maozi_source={maozi_source}", prefix="sku")
-    product_snapshot = product_snapshot_override or browser.product_snapshot(sku)
+    product_snapshot = product_snapshot_override or load_product_snapshot(sku, browser)
     plugin_card: dict[str, Any] = {
         "metric_overrides": {},
         "seller_offer_count": None,
