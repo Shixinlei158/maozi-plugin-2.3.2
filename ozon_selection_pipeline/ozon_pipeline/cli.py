@@ -537,6 +537,13 @@ def run_seller_network(
             sku_result = item_result["sku_result"]
             seller_skus += 1
             total_skus += 1
+            if seller_skus % 50 == 0:
+                print(
+                    "  progress:",
+                    f"sku={sku}",
+                    f"done={seller_skus}/{len(prepared_items)}",
+                    f"q={seller_qualified}",
+                )
             if sku_result.get("batch_skipped"):
                 seller_skipped += 1
                 print(
