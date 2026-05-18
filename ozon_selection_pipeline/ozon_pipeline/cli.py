@@ -1982,15 +1982,20 @@ def process_sku(
 
     if seller_offer_count is None:
         if not non_offer_reasons:
-            try:
-                offers = load_seller_offers(sku, browser)
-                seller_offer_count = len(offers)
-                preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
-                vlog("sku offers fetched:", f"sku={sku}", f"offers={seller_offer_count}", prefix="sku")
-            except Exception as exc:
-                offers = None
-                offer_fetch_error = exc
-                vlog("sku offers fetch failed:", f"sku={sku}", exc, prefix="sku")
+            if batch_only_mode:
+                # In batch mode, don't make browser calls per SKU for offers.
+                # The SKU3 data alone is sufficient for initial qualification.
+                vlog("sku batch-only skipped offers:", f"sku={sku}", prefix="sku")
+            else:
+                try:
+                    offers = load_seller_offers(sku, browser)
+                    seller_offer_count = len(offers)
+                    preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
+                    vlog("sku offers fetched:", f"sku={sku}", f"offers={seller_offer_count}", prefix="sku")
+                except Exception as exc:
+                    offers = None
+                    offer_fetch_error = exc
+                    vlog("sku offers fetch failed:", f"sku={sku}", exc, prefix="sku")
 
     if seller_offer_count is None and not non_offer_reasons:
         if batch_only_mode:
@@ -2040,20 +2045,23 @@ def process_sku(
     except Exception as exc:
         vlog("sku_universe upsert failed:", f"sku={sku}", f"error={exc}", prefix="sku")
     if seller_offer_count is None and not non_offer_reasons:
-        reason = build_retry_reason("跟卖列表", offer_fetch_error)
-        mark_seed_status(sku, status="failed", reason=reason)
-        return {
-            "sku": sku,
-            "qualified": False,
-            "strict_qualified": False,
-            "transient_failed": True,
-            "rule_reason": reason,
-            "status_update_sales": metric_preview["status_update_sales"],
-            "status_update_variant": metric_preview["status_update_variant"],
-            "seller_offer_count": None,
-            "maozi_source": maozi_source,
-            "offers": [],
-        }
+        if batch_only_mode:
+            vlog("sku batch-only finalizing without offers:", f"sku={sku}", prefix="sku")
+        else:
+            reason = build_retry_reason("跟卖列表", offer_fetch_error)
+            mark_seed_status(sku, status="failed", reason=reason)
+            return {
+                "sku": sku,
+                "qualified": False,
+                "strict_qualified": False,
+                "transient_failed": True,
+                "rule_reason": reason,
+                "status_update_sales": metric_preview["status_update_sales"],
+                "status_update_variant": metric_preview["status_update_variant"],
+                "seller_offer_count": None,
+                "maozi_source": maozi_source,
+                "offers": [],
+            }
     if defer_pending_refresh:
         reason = "待重试: 毛子 sku3 返回待刷新状态(update_sales/update_variant)，关键字段尚未补齐"
         mark_seed_status(sku, status="failed", reason=reason)
