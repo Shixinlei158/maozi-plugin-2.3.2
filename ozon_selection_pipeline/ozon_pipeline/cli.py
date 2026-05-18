@@ -19,6 +19,7 @@ from .repository import (
     finish_top_list_run,
     bulk_upsert_seller_home_skus,
     bulk_upsert_seed_skus,
+    bulk_upsert_sku_results,
     upsert_seller_home_sku,
     get_seller_shop,
     get_recent_top_list_run,

@@ -1099,8 +1099,14 @@ class BrowserOzonClient:
                 }
             """)
             if result:
+                print(f"[token] got from dashboard localStorage (len={len(result)})")
                 self._cached_maozi_token = (result, "localStorage")
                 return result
+            else:
+                print("[token] dashboard found but localStorage has no accessToken")
+
+        # 回退：导航到 ext popup 取 chrome.storage token
+        print("[token] no dashboard page or no token, falling back to ext popup")
 
         # 回退：导航到 ext popup 取 chrome.storage token
         target_url = self._extension_popup_url()
