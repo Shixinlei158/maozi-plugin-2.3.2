@@ -107,12 +107,43 @@ def execute(sql: str, params: Optional[dict[str, Any]] = None) -> int:
 
 
 def execute_many(sql: str, params: Iterable[dict[str, Any]]) -> int:
+    """逐条执行多条参数（使用 SQLAlchemy text()，适用于非 INSERT 或少量数据）"""
     def _do():
         engine = get_engine()
         with engine.begin() as conn:
             result = conn.execute(text(_prepare_sql(sql)), list(params))
             return result.rowcount
     return _retry_on_transient(_do)
+
+
+def execute_insert_many(sql: str, params: list[dict[str, Any]], *, batch_size: int = 0) -> int:
+    """批量 INSERT（使用 PyMySQL executemany，单次往返合并多行）。
+    
+    sql 使用 PyMySQL %(name)s 占位符（不经过 _prepare_sql 转换）。
+    当 batch_size > 0 时，将 params 分批执行以控制单次数据包大小。
+    """
+    param_list = list(params)
+    if not param_list:
+        return 0
+
+    def _do_one(batch: list[dict[str, Any]]) -> int:
+        engine = get_engine()
+        with engine.begin() as conn:
+            raw = conn.connection
+            cursor = raw.cursor()
+            try:
+                cursor.executemany(sql, batch)
+                return cursor.rowcount
+            finally:
+                cursor.close()
+
+    if batch_size and len(param_list) > batch_size:
+        total = 0
+        for i in range(0, len(param_list), batch_size):
+            chunk = param_list[i : i + batch_size]
+            total += _retry_on_transient(_do_one, chunk)
+        return total
+    return _retry_on_transient(_do_one, param_list)
 
 
 def insert_and_get_id(sql: str, params: Optional[dict[str, Any]] = None) -> int:

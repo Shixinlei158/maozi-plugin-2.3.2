@@ -554,7 +554,7 @@ def bulk_upsert_sku_universe_product_snapshots(entries: list[dict[str, Any]]) ->
     rows = [row for row in rows if row["sku"]]
     if not rows:
         return 0
-    return db.execute_many(
+    return db.execute_insert_many(
         """
         INSERT INTO sku_universe
           (sku, title, brand, product_url, main_image_url, price_amount, price_currency, price_cny,
@@ -575,7 +575,178 @@ def bulk_upsert_sku_universe_product_snapshots(entries: list[dict[str, Any]]) ->
           last_product_collected_at=COALESCE(VALUES(last_product_collected_at), last_product_collected_at)
         """,
         rows,
+        batch_size=200,
     )
+
+
+def bulk_upsert_sku_results(
+    results: list[dict[str, Any]],
+    *,
+    source: str,
+) -> None:
+    """批量更新 SKU 处理结果，包括指标、产品快照和种子表状态。"""
+    if not results:
+        return
+
+    metric_rows = []
+    product_rows = []
+    seed_status_rows = []
+    universe_entries = []
+
+    now = datetime.now()
+
+    for item in results:
+        sku = item["sku"]
+        sku_result = item["sku_result"]
+        metric = sku_result.get("metric")
+        product_snapshot = sku_result.get("product_snapshot")
+        selection_result = sku_result.get("selection_result")
+        plugin_card = sku_result.get("plugin_card") or {}
+        seller_offer_count = sku_result.get("seller_offer_count")
+        
+        # 1. 准备指标行
+        if metric:
+            m_row = dict(metric)
+            m_row["collected_at"] = now
+            metric_rows.append(m_row)
+        
+        # 2. 准备产品快照行 (仅达标 SKU)
+        if selection_result and selection_result.matched and metric:
+            p_row = {
+                "sku": sku,
+                "variant_id": metric.get("variant_id"),
+                "product_url": product_snapshot.get("product_url") if product_snapshot else None,
+                "title": product_snapshot.get("title") if product_snapshot else None,
+                "brand": metric.get("brand") or (product_snapshot.get("brand") if product_snapshot else None),
+                "category": metric.get("category"),
+                "category_ids": metric.get("category_ids"),
+                "price": product_snapshot.get("price") if product_snapshot else None,
+                "currency": product_snapshot.get("currency") if product_snapshot else None,
+                "main_image_url": product_snapshot.get("main_image_url") if product_snapshot else None,
+                "sold_count": metric.get("sold_count"),
+                "sold_sum_rub": metric.get("sold_sum_rub"),
+                "sold_sum_cny": metric.get("sold_sum_cny"),
+                "sales_dynamics": metric.get("sales_dynamics"),
+                "maozi_fields_zh": build_maozi_fields_zh(metric, plugin_card=plugin_card, seller_offer_count=seller_offer_count),
+                "collected_at": now,
+            }
+            # 补齐其它 rfbs/fbp 字段... 这里简化一下，实际按需补全
+            for f in ["rfbs_leq_1500", "rfbs_leq_5000", "rfbs_gt_5000", "fbp_leq_1500", "fbp_leq_5000", "fbp_gt_5000", 
+                      "avg_orders_on_acc_days", "avg_gmv_on_acc_days", "avg_gmv_on_acc_days_cny", "drr", "days_in_promo", "discount"]:
+                p_row[f] = metric.get(f)
+            product_rows.append(p_row)
+
+        # 3. 准备种子表状态
+        status = "qualified" if (selection_result and selection_result.matched) else "rejected"
+        if sku_result.get("transient_failed"):
+            status = "failed"
+        
+        seed_status_rows.append({
+            "sku": sku,
+            "status": status,
+            "reason": sku_result.get("rule_reason") or "批量处理",
+            "now": now,
+        })
+
+        # 4. 准备 universe 更新
+        if product_snapshot or metric:
+            universe_entries.append({
+                "sku": sku,
+                "product_data": product_snapshot,
+                "metric": metric,
+                "plugin_card": plugin_card,
+                "seller_offer_count": seller_offer_count,
+                "selection_result": selection_result,
+            })
+
+    # 执行批量写入
+    if metric_rows:
+        columns = [c for c in metric_rows[0].keys()]
+        updates = [f"{c}=VALUES({c})" for c in columns if c not in ("sku", "collected_at")]
+        sql = f"""
+            INSERT INTO sku_plugin_metrics ({",".join(columns)})
+            VALUES ({",".join("%(" + c + ")s" for c in columns)})
+            ON DUPLICATE KEY UPDATE {",".join(updates)}, collected_at=VALUES(collected_at)
+        """
+        db.execute_insert_many(sql, metric_rows, batch_size=200)
+
+    if product_rows:
+        columns = [c for c in product_rows[0].keys()]
+        updates = [f"{c}=VALUES({c})" for c in columns if c not in ("sku", "collected_at")]
+        sql = f"""
+            INSERT INTO sku_products ({",".join(columns)})
+            VALUES ({",".join("%(" + c + ")s" for c in columns)})
+            ON DUPLICATE KEY UPDATE {",".join(updates)}, collected_at=VALUES(collected_at)
+        """
+        db.execute_insert_many(sql, product_rows, batch_size=200)
+
+    if seed_status_rows:
+        db.execute_many(
+            """
+            UPDATE seed_pool_skus 
+            SET status=%(status)s, rule_reason=%(reason)s, updated_at=%(now)s 
+            WHERE sku=%(sku)s
+            """,
+            seed_status_rows
+        )
+    
+    if universe_entries:
+        # 这里需要一个新的 bulk 函数来处理完整的 universe 更新
+        bulk_upsert_sku_universe_full(universe_entries)
+
+
+def bulk_upsert_sku_universe_full(entries: list[dict[str, Any]]) -> None:
+    rows = []
+    now = datetime.now()
+    for entry in entries:
+        sku = entry["sku"]
+        product_data = entry.get("product_data") or {}
+        metric = entry.get("metric") or {}
+        plugin_card = entry.get("plugin_card") or {}
+        seller_offer_count = entry.get("seller_offer_count")
+        selection_result = entry.get("selection_result")
+        
+        price_amount = to_decimal(product_data.get("price"))
+        price_currency = product_data.get("currency")
+        
+        rows.append({
+            "sku": sku,
+            "title": product_data.get("title"),
+            "brand": metric.get("brand") or product_data.get("brand"),
+            "product_url": product_data.get("product_url"),
+            "main_image_url": product_snapshot_main_image(product_data, plugin_card),
+            "price_amount": price_amount,
+            "price_currency": price_currency,
+            "price_cny": price_to_cny(price_amount, price_currency) if price_amount else None,
+            "sold_count": metric.get("sold_count"),
+            "sold_sum_rub": metric.get("sold_sum_rub"),
+            "sold_sum_cny": metric.get("sold_sum_cny"),
+            "seller_offer_count": seller_offer_count,
+            "rule_name": selection_result.rule_name if selection_result else None,
+            "rule_matched": 1 if (selection_result and selection_result.matched) else 0,
+            "rule_reason": selection_result.summary if selection_result else None,
+            "product_raw_json": json_dumps(product_data.get("raw")) if product_data.get("raw") else None,
+            "metric_raw_json": json_dumps(entry.get("metric_raw")) if entry.get("metric_raw") else None,
+            "last_seen_at": now,
+            "last_product_collected_at": now if product_data else None,
+            "last_metric_collected_at": now if metric else None,
+        })
+
+    if not rows:
+        return
+
+    columns = [c for c in rows[0].keys()]
+    updates = [f"{c}=VALUES({c})" for c in columns if c not in ("sku", "last_seen_at")]
+    sql = f"""
+        INSERT INTO sku_universe ({",".join(columns)})
+        VALUES ({",".join("%(" + c + ")s" for c in columns)})
+        ON DUPLICATE KEY UPDATE {",".join(updates)}, last_seen_at=VALUES(last_seen_at)
+    """
+    db.execute_insert_many(sql, rows, batch_size=200)
+
+
+def product_snapshot_main_image(product_data: dict[str, Any], plugin_card: dict[str, Any]) -> str | None:
+    return plugin_card.get("main_image_url") or product_data.get("main_image_url")
 
 
 def upsert_sku3_response(
@@ -1475,7 +1646,7 @@ def bulk_upsert_seller_home_skus(seller_home_url: str, items: list[dict[str, Any
     rows = prepare_seller_home_sku_rows(seller_home_url, items)
     if not rows:
         return []
-    db.execute_many(
+    db.execute_insert_many(
         """
         INSERT INTO seller_home_skus
           (seller_key, sku, product_url, title, price_amount, currency, main_image_url, raw_json)
@@ -1491,8 +1662,9 @@ def bulk_upsert_seller_home_skus(seller_home_url: str, items: list[dict[str, Any
           updated_at=CURRENT_TIMESTAMP
         """,
         rows,
+        batch_size=200,
     )
-    db.execute_many(
+    db.execute_insert_many(
         """
         INSERT INTO sku_discovery_sources
           (sku, source_type, source_key, source_url, source_name, related_sku, source_rank, raw_json, last_seen_at)
@@ -1507,6 +1679,7 @@ def bulk_upsert_seller_home_skus(seller_home_url: str, items: list[dict[str, Any
           last_seen_at=CURRENT_TIMESTAMP
         """,
         rows,
+        batch_size=200,
     )
     bulk_upsert_sku_universe_product_snapshots(rows)
     return [(row["sku"], row["product_data"]["raw"]["seller_home"]) for row in rows]

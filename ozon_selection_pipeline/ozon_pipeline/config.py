@@ -75,12 +75,14 @@ class Settings:
     top_list_default_max_pages: int = int(os.getenv("TOP_LIST_DEFAULT_MAX_PAGES", "100"))
     top_list_default_create_date_from: str = os.getenv("TOP_LIST_DEFAULT_CREATE_DATE_FROM", "2025-04-01")
     top_list_default_create_date_to: str = os.getenv("TOP_LIST_DEFAULT_CREATE_DATE_TO", date.today().isoformat())
-    top_list_sku3_batch_size: int = int(os.getenv("TOP_LIST_SKU3_BATCH_SIZE", "40"))
-    top_list_sku3_batch_concurrency: int = int(os.getenv("TOP_LIST_SKU3_BATCH_CONCURRENCY", "12"))
-    top_list_sku3_batch_chunk_delay_ms: int = int(os.getenv("TOP_LIST_SKU3_BATCH_CHUNK_DELAY_MS", "500"))
+    # 毛子 SKU3 批量预取配置 (适用于 top-list 和卖家页)
+    top_list_sku3_batch_size: int = int(os.getenv("TOP_LIST_SKU3_BATCH_SIZE", "60"))
+    top_list_sku3_batch_concurrency: int = int(os.getenv("TOP_LIST_SKU3_BATCH_CONCURRENCY", "16"))
+    top_list_sku3_batch_chunk_delay_ms: int = int(os.getenv("TOP_LIST_SKU3_BATCH_CHUNK_DELAY_MS", "100"))
+
     seed_pool_query_limit: int = int(os.getenv("SEED_POOL_QUERY_LIMIT", "500"))
     seed_sku_workers: int = int(os.getenv("SEED_SKU_WORKERS", "4"))
-    seller_sku_workers: int = int(os.getenv("SELLER_SKU_WORKERS", "3"))
+    seller_sku_workers: int = int(os.getenv("SELLER_SKU_WORKERS", "6"))
     chrome_page_prune_threshold: int = int(os.getenv("CHROME_PAGE_PRUNE_THRESHOLD", "12"))
 
 

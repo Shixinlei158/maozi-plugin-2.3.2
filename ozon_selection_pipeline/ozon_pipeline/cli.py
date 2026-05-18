@@ -477,7 +477,20 @@ def run_seller_network(
                     f"succeeded={len(seller_prefetched_maozi)}",
                     prefix="seller",
                 )
+            except ManualInterventionRequired:
+                raise
             except Exception as exc:
+                error_text = str(exc).lower()
+                if "cloudflare" in error_text:
+                    log_line(
+                        "maozi Cloudflare detected, pausing for manual verification",
+                        f"seller={url}",
+                        prefix="cloudflare",
+                    )
+                    raise ManualInterventionRequired(
+                        f"Maozi Cloudflare challenge detected during batch SKU3 prefetch for seller {url}. "
+                        f"Please solve the challenge in the browser window, then the collection will resume."
+                    ) from exc
                 seller_batch_prefetch_failed = True
                 vlog("seller-home batch sku3 prefetch failed:", f"seller={url}", exc, prefix="seller")
                 print(
@@ -531,13 +544,6 @@ def run_seller_network(
                 "raw": {"seller_home": item},
             }
             if prefetched is None:
-                try:
-                    upsert_sku_universe(
-                        sku,
-                        product_data=product_snapshot_override,
-                    )
-                except Exception as exc:
-                    vlog("sku_universe upsert failed:", f"sku={sku}", f"error={exc}", prefix="seller")
                 return {
                     "sku": sku,
                     "sku_result": {
@@ -547,6 +553,7 @@ def run_seller_network(
                         "seller_offer_count": None,
                         "offers": [],
                         "maozi_source": "seller_batch_miss",
+                        "product_snapshot": product_snapshot_override,
                     },
                 }
             sku_result = process_sku(
@@ -557,14 +564,20 @@ def run_seller_network(
                 product_snapshot_override=product_snapshot_override,
                 prefetched_maozi=prefetched,
                 batch_only_mode=True,
+                skip_db=True,
             )
             return {"sku": sku, "sku_result": sku_result}
+
+        seller_results: list[dict[str, Any]] = []
 
         def consume_seller_home_result(item_result: dict[str, Any] | None) -> None:
             nonlocal seller_skus, total_skus, seller_qualified, qualified_skus
             nonlocal seller_rejected, rejected_skus, seller_deferred, deferred_skus, seller_skipped, seller_offer_rows, stored_offer_rows
             if not item_result:
                 return
+            
+            seller_results.append(item_result)
+            
             sku = item_result["sku"]
             sku_result = item_result["sku_result"]
             seller_skus += 1
@@ -578,20 +591,10 @@ def run_seller_network(
                 )
             if sku_result.get("batch_skipped"):
                 seller_skipped += 1
-                print(
-                    "  sku:",
-                    sku,
-                    "| skipped | offers=",
-                    sku_result["seller_offer_count"],
-                    "|",
-                    sku_result["rule_reason"],
-                )
                 return
             if sku_result.get("transient_failed"):
                 seller_deferred += 1
                 deferred_skus += 1
-                if needs_manual_intervention(sku_result["rule_reason"]):
-                    raise ManualInterventionRequired(sku_result["rule_reason"])
                 return
             if sku_result["qualified"]:
                 seller_qualified += 1
@@ -611,24 +614,21 @@ def run_seller_network(
             else:
                 seller_rejected += 1
                 rejected_skus += 1
-            if sku_result["qualified"]:
-                print(
-                    "  qualified sku:",
-                    sku,
-                    "| offers=",
-                    sku_result["seller_offer_count"],
-                    "|",
-                    sku_result["rule_reason"],
-                )
 
         if seller_sku_workers <= 1 or len(prepared_items) <= 1:
             for entry in prepared_items:
                 consume_seller_home_result(process_seller_home_item(entry))
         else:
-            with ThreadPoolExecutor(max_workers=seller_sku_workers) as executor:
+            # 批量模式下不涉及浏览器竞争，增加 worker 数量以提高 DB 吞吐
+            effective_workers = min(seller_sku_workers * 3, 16)
+            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
                 futures = [executor.submit(process_seller_home_item, entry) for entry in prepared_items]
                 for future in as_completed(futures):
                     consume_seller_home_result(future.result())
+
+        # 卖家所有 SKU 处理完后，统一执行批量写库
+        if seller_results:
+            bulk_upsert_sku_results(seller_results, source=f"seller_home:{url}")
 
         mark_seller_collected(key)
         processed_sellers += 1
@@ -1942,12 +1942,14 @@ def process_sku(
     product_snapshot_override: dict[str, Any] | None = None,
     prefetched_maozi: tuple[dict[str, Any], str] | None = None,
     batch_only_mode: bool = False,
+    skip_db: bool = False,
 ) -> dict[str, Any]:
     try:
-        upsert_seed_sku(sku, source=source)
+        if not skip_db:
+            upsert_seed_sku(sku, source=source)
     except Exception as exc:
         vlog("seed_sku upsert failed:", f"sku={sku}", f"error={exc}", prefix="sku")
-    vlog("process_sku start:", f"sku={sku}", f"source={source}", f"batch_only={batch_only_mode}", prefix="sku")
+    vlog("process_sku start:", f"sku={sku}", f"source={source}", f"batch_only={batch_only_mode}", f"skip_db={skip_db}", prefix="sku")
     if prefetched_maozi is not None:
         response, maozi_source = prefetched_maozi
     else:
@@ -2086,6 +2088,24 @@ def process_sku(
         },
         prefix="sku",
     )
+
+    if skip_db:
+        return {
+            "sku": sku,
+            "qualified": preview_rule.matched and not defer_pending_refresh,
+            "rule_reason": preview_rule.summary,
+            "status_update_sales": metric_preview.get("status_update_sales"),
+            "status_update_variant": metric_preview.get("status_update_variant"),
+            "seller_offer_count": seller_offer_count,
+            "maozi_source": maozi_source,
+            "metric": metric_preview,
+            "product_snapshot": product_snapshot,
+            "selection_result": preview_rule,
+            "plugin_card": plugin_card,
+            "transient_failed": defer_pending_refresh,
+            "metric_raw": response,
+        }
+
     try:
         upsert_sku_universe(
             sku,

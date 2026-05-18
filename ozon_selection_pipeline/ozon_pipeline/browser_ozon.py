@@ -1071,7 +1071,7 @@ class BrowserOzonClient:
         except Exception:
             current_url = ""
         if current_url != target_url:
-            page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
+            page.goto(target_url, wait_until="domcontentloaded", timeout=10000)
             page.wait_for_timeout(300)
 
         raw = page.evaluate(
@@ -1159,7 +1159,7 @@ class BrowserOzonClient:
         )
         if isinstance(raw, dict) and raw.get("_needs_fallback"):
             self._ensure_maozi_selection_ready(page)
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(300)
             raw = page.evaluate(
                 """
                 async ({ skus, concurrency, timeoutMs, pluginVersion }) => {
@@ -1271,14 +1271,14 @@ class BrowserOzonClient:
             if remaining <= 0:
                 raise RuntimeError("Timeout before navigation")
             page.goto(OZON_BASE, wait_until="domcontentloaded", timeout=min(remaining, 30000))
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(500)
         # Navigate to seller page for visual feedback (user can see progress)
         if page.url != seller_url:
             remaining = (deadline - time.time()) * 1000 if deadline else 120000
             if remaining <= 0:
                 raise RuntimeError("Timeout before navigation to seller page")
             page.goto(seller_url, wait_until="domcontentloaded", timeout=min(remaining, 30000))
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(300)
             
         seller_path = extract_relative_url(seller_url)
         all_items: list[dict[str, Any]] = []
@@ -1312,7 +1312,7 @@ class BrowserOzonClient:
                   }
                 }
                 """,
-                {"sellerPath": next_path, "timeoutMs": 15000},
+                {"sellerPath": next_path, "timeoutMs": 8000},
             )
             if not raw.get("ok"):
                 # If API fails, we might want to break and try DOM fallback
@@ -1351,13 +1351,13 @@ class BrowserOzonClient:
             raise RuntimeError("Timeout before DOM navigation")
             
         page.goto(seller_url, wait_until="domcontentloaded", timeout=min(remaining, 120000))
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(1500)
         
         for _ in range(max_scrolls):
             if deadline and time.time() > deadline:
                 break
             page.mouse.wheel(0, 5000)
-            page.wait_for_timeout(1200)
+            page.wait_for_timeout(600)
             
         raw = page.evaluate(
             """
