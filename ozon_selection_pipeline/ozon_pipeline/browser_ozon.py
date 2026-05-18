@@ -1077,16 +1077,19 @@ class BrowserOzonClient:
         raw = page.evaluate(
             """
             async ({ skus, concurrency, timeoutMs, pluginVersion }) => {
-              // Try extension chrome.storage token first
+              // Try extension chrome.storage token first, with retries
               let token = null;
               let tokenSource = "";
-              try {
-                const storage = await chrome.storage.local.get(["maozierp-token"]);
-                token = storage["maozierp-token"];
-                if (token) tokenSource = "extension_storage";
-              } catch(e) {}
+              for (let attempt = 0; attempt < 5 && !token; attempt++) {
+                if (attempt > 0) await new Promise(r => setTimeout(r, 500));
+                try {
+                  const storage = await chrome.storage.local.get(["maozierp-token"]);
+                  token = storage["maozierp-token"];
+                  if (token) tokenSource = "extension_storage";
+                } catch(e) {}
+              }
               if (!token) {
-                return { _needs_fallback: true, _reason: "maozierp-token missing in chrome.storage.local" };
+                return { _needs_fallback: true, _reason: "maozierp-token missing in chrome.storage.local after 5 retries" };
               }
               const items = Array.from(new Set((skus || []).map((sku) => String(sku).trim()).filter(Boolean)));
               const results = {};
@@ -1463,7 +1466,15 @@ class BrowserOzonClient:
     def _ensure_maozi_selection_ready(self, page: Any) -> None:
         if not page.url.startswith(MAOZI_SELECTION_ORIGIN):
             page.goto(MAOZI_SELECTION_URL, wait_until="domcontentloaded", timeout=120000)
-            page.wait_for_timeout(1000)
+        # 等待 SPA 渲染完成：页面标题稳定且有实质内容
+        for _ in range(20):
+            page.wait_for_timeout(500)
+            body_text = str(
+                page.evaluate("() => (document.body?.innerText || '')")
+                or ""
+            ).strip()
+            if len(body_text) > 20:
+                break
         challenge_text = str(
             page.evaluate(
                 """
