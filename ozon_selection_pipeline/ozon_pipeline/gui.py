@@ -65,7 +65,7 @@ class _GuiSummaryLogger:
         self._queue_length = 0
 
     def _set_next_interval(self):
-        interval_minutes = random.uniform(1, 2)
+        interval_minutes = random.uniform(0.5, 1.0)
         self._next_summary_at = datetime.now() + timedelta(minutes=interval_minutes)
 
     def write(self, text: str) -> None:
@@ -169,8 +169,10 @@ class App:
         self._param_widgets: dict[str, Any] = {}
         self._param_vars: dict[str, tk.Variable] = {}
         self._mode_var = tk.StringVar(value="expand-seller-backlog")
+        self._runtime_stats: dict[str, str] = {}
 
         self._build_ui()
+        self._reset_runtime_stats()
         self._load_config()
         self._update_linkages()
         self._poll_status()
@@ -246,6 +248,24 @@ class App:
         self._plugin_label.grid(row=1, column=2, padx=(0, 10), sticky="w")
         self._seller_label = Label(dashboard, text="卖家: 检测中...", bg="#ffffff", font=("Microsoft YaHei", 9))
         self._seller_label.grid(row=1, column=3, sticky="w")
+        self._mode_label = Label(dashboard, text="模式: 待机", bg="#ffffff", font=("Microsoft YaHei", 9))
+        self._mode_label.grid(row=2, column=0, padx=(0, 10), sticky="w")
+        self._phase_label = Label(dashboard, text="阶段: 未开始", bg="#ffffff", font=("Microsoft YaHei", 9))
+        self._phase_label.grid(row=2, column=1, padx=(0, 10), sticky="w")
+        self._progress_label = Label(dashboard, text="进度: 暂无", bg="#ffffff", font=("Microsoft YaHei", 9))
+        self._progress_label.grid(row=2, column=2, padx=(0, 10), sticky="w")
+        self._issue_label = Label(dashboard, text="异常: 暂无", bg="#ffffff", font=("Microsoft YaHei", 9))
+        self._issue_label.grid(row=2, column=3, sticky="w")
+        self._current_seller_label = Label(
+            dashboard,
+            text="当前卖家: 暂无",
+            bg="#ffffff",
+            font=("Microsoft YaHei", 9),
+            anchor="w",
+            justify="left",
+            wraplength=980,
+        )
+        self._current_seller_label.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(6, 0))
 
         # 核心控制区
         control_panel = Frame(self.root, bg="#ffffff", padx=12, pady=8, relief="ridge", bd=1)
@@ -387,6 +407,11 @@ class App:
         )
         self._log_area.pack(fill="both", expand=True)
         self._log_area.configure(state="disabled")
+        self._log_area.tag_configure("error", foreground="#ff6b6b")
+        self._log_area.tag_configure("warning", foreground="#ffd166")
+        self._log_area.tag_configure("summary", foreground="#4cc9f0")
+        self._log_area.tag_configure("success", foreground="#72efdd")
+        self._log_area.tag_configure("progress", foreground="#a29bfe")
 
     def _add_param(self, parent: Frame, row: int, col: int, label: str, key: str, default: Any, ptype: str, min_val=None, max_val=None, tooltip=""):
         frame = Frame(parent, bg="#ffffff")
@@ -587,6 +612,109 @@ class App:
 
         self._seller_label.config(text=f"卖家池: {info.get('seller_count', 0)}", fg="#2c3e50")
 
+    def _reset_runtime_stats(self):
+        self._runtime_stats = {
+            "mode": "待机",
+            "phase": "未开始",
+            "current_seller": "暂无",
+            "progress": "暂无",
+            "latest_issue": "暂无",
+        }
+        self._sync_runtime_labels()
+
+    def _sync_runtime_labels(self):
+        self._mode_label.config(text=f"模式: {self._runtime_stats.get('mode', '待机')}", fg="#2c3e50")
+        phase = self._runtime_stats.get("phase", "未开始")
+        phase_color = "#e74c3c" if "异常" in phase or "失败" in phase else "#27ae60" if "运行" in phase else "#2c3e50"
+        self._phase_label.config(text=f"阶段: {phase}", fg=phase_color)
+        self._progress_label.config(text=f"进度: {self._runtime_stats.get('progress', '暂无')}", fg="#2c3e50")
+        issue = self._runtime_stats.get("latest_issue", "暂无")
+        issue_color = "#e74c3c" if issue != "暂无" else "#2c3e50"
+        self._issue_label.config(text=f"异常: {issue}", fg=issue_color)
+        self._current_seller_label.config(text=f"当前卖家: {self._runtime_stats.get('current_seller', '暂无')}")
+
+    @staticmethod
+    def _extract_metric(text: str, key: str) -> str:
+        pos = text.find(key)
+        if pos < 0:
+            return ""
+        pos += len(key)
+        chars: list[str] = []
+        for ch in text[pos:]:
+            if not chars and ch == " ":
+                continue
+            if ch in {"|", "\n"}:
+                break
+            chars.append(ch)
+        return "".join(chars).strip()
+
+    def _consume_runtime_line(self, line: str):
+        stripped = line.strip()
+        if not stripped:
+            return
+        if stripped.startswith("===== 开始采集"):
+            self._runtime_stats["phase"] = "运行中"
+        elif stripped.startswith("===== 正在停止采集"):
+            self._runtime_stats["phase"] = "停止中"
+        elif stripped.startswith("===== 采集完成"):
+            self._runtime_stats["phase"] = "已完成"
+        elif stripped.startswith("expand-network round"):
+            fetched = self._extract_metric(stripped, "fetched=")
+            self._runtime_stats["phase"] = "卖家队列处理中"
+            self._runtime_stats["progress"] = f"本轮待处理卖家={fetched or '?'}"
+        elif stripped.startswith("crawl seller:"):
+            seller = stripped.split("|", 1)[0].replace("crawl seller:", "").strip()
+            items = self._extract_metric(stripped, "items=")
+            crawl = self._extract_metric(stripped, "crawl=")
+            self._runtime_stats["phase"] = "抓取卖家主页"
+            self._runtime_stats["current_seller"] = seller or "暂无"
+            self._runtime_stats["progress"] = f"卖家SKU={items or '?'} 抓取耗时={crawl or '?'}"
+        elif stripped.startswith("seller home skus prepared:"):
+            saved = self._extract_metric(stripped, "saved=")
+            mode = self._extract_metric(stripped, "mode=")
+            elapsed = self._extract_metric(stripped, "elapsed=")
+            self._runtime_stats["phase"] = "批量写入卖家SKU"
+            self._runtime_stats["progress"] = f"已准备SKU={saved or '?'} 模式={mode or '?'} 耗时={elapsed or '?'}"
+        elif stripped.startswith("prefetch SKU3 batch:"):
+            requested = self._extract_metric(stripped, "requested=")
+            fetched = self._extract_metric(stripped, "fetched=")
+            elapsed = self._extract_metric(stripped, "elapsed=")
+            self._runtime_stats["phase"] = "批量预取SKU3"
+            self._runtime_stats["progress"] = f"requested={requested or '?'} fetched={fetched or '?'} elapsed={elapsed or '?'}"
+        elif stripped.startswith("  progress:"):
+            done = self._extract_metric(stripped, "done=")
+            qualified = self._extract_metric(stripped, "q=")
+            self._runtime_stats["phase"] = "SKU规则判定中"
+            self._runtime_stats["progress"] = f"已处理={done or '?'} 达标={qualified or '0'}"
+        elif stripped.startswith("seller summary:"):
+            skus = self._extract_metric(stripped, "skus=")
+            qualified = self._extract_metric(stripped, "qualified=")
+            rejected = self._extract_metric(stripped, "rejected=")
+            total = self._extract_metric(stripped, "total=")
+            self._runtime_stats["phase"] = "单卖家完成"
+            self._runtime_stats["progress"] = f"skus={skus or '?'} qualified={qualified or '0'} rejected={rejected or '0'} total={total or '?'}"
+        elif any(flag in stripped.lower() for flag in ("traceback", "error:", "write-error", "failed", "manual action required")):
+            self._runtime_stats["latest_issue"] = stripped[:120]
+            if "phase" not in self._runtime_stats or self._runtime_stats["phase"] == "未开始":
+                self._runtime_stats["phase"] = "异常"
+        elif stripped.startswith("skip seller"):
+            self._runtime_stats["latest_issue"] = stripped[:120]
+        self._sync_runtime_labels()
+
+    def _log_tag_for_line(self, line: str) -> str | None:
+        lowered = line.lower()
+        if any(flag in lowered for flag in ("traceback", "error:", "write-error", "failed", "manual action required")):
+            return "error"
+        if "warning" in lowered or "skip seller" in lowered:
+            return "warning"
+        if "summary:" in lowered or "定时状态报告" in line:
+            return "summary"
+        if "qualified sku:" in lowered or "采集完成" in line:
+            return "success"
+        if "progress:" in lowered or "prepared:" in lowered or "prefetch sku3 batch:" in lowered:
+            return "progress"
+        return None
+
     def _start_log_poller(self):
         while True:
             try:
@@ -599,7 +727,17 @@ class App:
     def _append_log(self, text: str):
         try:
             self._log_area.configure(state="normal")
-            self._log_area.insert("end", text)
+            segments = text.splitlines(keepends=True)
+            if not segments:
+                segments = [text]
+            for segment in segments:
+                if segment.strip():
+                    self._consume_runtime_line(segment)
+                tag = self._log_tag_for_line(segment)
+                if tag:
+                    self._log_area.insert("end", segment, tag)
+                else:
+                    self._log_area.insert("end", segment)
             self._log_area.see("end")
             self._log_area.configure(state="disabled")
         except Exception:
@@ -610,6 +748,7 @@ class App:
             self._log_area.configure(state="normal")
             self._log_area.delete("1.0", "end")
             self._log_area.configure(state="disabled")
+            self._reset_runtime_stats()
         except Exception:
             pass
 
@@ -674,9 +813,15 @@ class App:
         self._stop_btn.config(state="normal", bg="#e74c3c")
         self._clear_log()
         self._logger = _GuiSummaryLogger(self._log_queue)
+        self._runtime_stats["mode"] = mode
+        self._runtime_stats["phase"] = "启动中"
+        self._runtime_stats["current_seller"] = "等待首个卖家..."
+        self._runtime_stats["progress"] = "等待日志输出"
+        self._runtime_stats["latest_issue"] = "暂无"
+        self._sync_runtime_labels()
         self._append_log(f"===== 开始采集 | 模式: {mode} =====\n")
         self._append_log(f"CDP 浏览器已连接: {cdp_url}\n")
-        self._append_log("全量实时日志已启用，每1-2分钟输出一次运行汇总。\n")
+        self._append_log("全量实时日志已启用，顶部状态卡会随日志实时刷新，并每30-60秒输出一次运行汇总。\n")
 
         sys.stdout = self._logger
         sys.stderr = self._logger
@@ -764,6 +909,8 @@ class App:
 
     def _collection_finished(self):
         self._append_log("\n===== 采集完成 =====\n")
+        self._runtime_stats["phase"] = "已完成"
+        self._sync_runtime_labels()
         self._start_btn.config(state="normal", bg="#27ae60")
         self._stop_btn.config(state="disabled", bg="#7f8c8d")
         self._stop_flag.clear()

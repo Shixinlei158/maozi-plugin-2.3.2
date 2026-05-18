@@ -30,6 +30,20 @@ def upsert_seed_sku(sku: str, source: str = "manual") -> None:
     )
 
 
+def bulk_upsert_seed_skus(skus: list[str], source: str = "manual") -> int:
+    rows = [{"sku": str(sku), "source": source} for sku in skus if str(sku).strip()]
+    if not rows:
+        return 0
+    return db.execute_many(
+        """
+        INSERT INTO seed_skus (sku, source)
+        VALUES (%(sku)s, %(source)s)
+        ON DUPLICATE KEY UPDATE source = VALUES(source), updated_at = CURRENT_TIMESTAMP
+        """,
+        rows,
+    )
+
+
 def top_list_query_key(filters: dict[str, Any]) -> str:
     normalized = json.dumps(filters, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
@@ -513,6 +527,54 @@ def upsert_sku_universe(
           last_offer_collected_at=COALESCE(VALUES(last_offer_collected_at), last_offer_collected_at)
         """,
         params,
+    )
+
+
+def bulk_upsert_sku_universe_product_snapshots(entries: list[dict[str, Any]]) -> int:
+    rows: list[dict[str, Any]] = []
+    now = datetime.now()
+    for entry in entries:
+        product_data = entry.get("product_data") or {}
+        price_amount = to_decimal(product_data.get("price"))
+        price_currency = product_data.get("currency")
+        rows.append(
+            {
+                "sku": str(entry.get("sku") or ""),
+                "title": product_data.get("title"),
+                "brand": product_data.get("brand"),
+                "product_url": product_data.get("product_url"),
+                "main_image_url": product_data.get("main_image_url"),
+                "price_amount": price_amount,
+                "price_currency": price_currency,
+                "price_cny": price_to_cny(price_amount, price_currency) if price_amount is not None else None,
+                "product_raw_json": json_dumps(product_data.get("raw")) if product_data.get("raw") is not None else None,
+                "last_product_collected_at": now if product_data else None,
+            }
+        )
+    rows = [row for row in rows if row["sku"]]
+    if not rows:
+        return 0
+    return db.execute_many(
+        """
+        INSERT INTO sku_universe
+          (sku, title, brand, product_url, main_image_url, price_amount, price_currency, price_cny,
+           product_raw_json, last_seen_at, last_product_collected_at)
+        VALUES
+          (%(sku)s, %(title)s, %(brand)s, %(product_url)s, %(main_image_url)s, %(price_amount)s, %(price_currency)s, %(price_cny)s,
+           %(product_raw_json)s, CURRENT_TIMESTAMP, %(last_product_collected_at)s)
+        ON DUPLICATE KEY UPDATE
+          title=COALESCE(VALUES(title), title),
+          brand=COALESCE(VALUES(brand), brand),
+          product_url=COALESCE(VALUES(product_url), product_url),
+          main_image_url=COALESCE(VALUES(main_image_url), main_image_url),
+          price_amount=COALESCE(VALUES(price_amount), price_amount),
+          price_currency=COALESCE(VALUES(price_currency), price_currency),
+          price_cny=COALESCE(VALUES(price_cny), price_cny),
+          product_raw_json=COALESCE(VALUES(product_raw_json), product_raw_json),
+          last_seen_at=CURRENT_TIMESTAMP,
+          last_product_collected_at=COALESCE(VALUES(last_product_collected_at), last_product_collected_at)
+        """,
+        rows,
     )
 
 
@@ -1446,11 +1508,8 @@ def bulk_upsert_seller_home_skus(seller_home_url: str, items: list[dict[str, Any
         """,
         rows,
     )
-    prepared: list[tuple[str, dict[str, Any]]] = []
-    for row in rows:
-        upsert_sku_universe(row["sku"], product_data=row["product_data"])
-        prepared.append((row["sku"], row["product_data"]["raw"]["seller_home"]))
-    return prepared
+    bulk_upsert_sku_universe_product_snapshots(rows)
+    return [(row["sku"], row["product_data"]["raw"]["seller_home"]) for row in rows]
 
 
 def mark_seller_collected(seller_key_value: str) -> None:

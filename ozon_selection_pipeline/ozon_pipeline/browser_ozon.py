@@ -1088,6 +1088,8 @@ class BrowserOzonClient:
               if (!token) {
                 return { _needs_fallback: true, _reason: "maozierp-token missing in chrome.storage.local" };
               }
+              const items = Array.from(new Set((skus || []).map((sku) => String(sku).trim()).filter(Boolean)));
+              const results = {};
               let nextIndex = 0;
               const workerTotal = Math.max(1, Math.min(Number(concurrency) || 1, items.length));
 

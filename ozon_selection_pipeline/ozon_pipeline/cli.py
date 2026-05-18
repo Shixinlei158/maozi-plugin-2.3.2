@@ -18,6 +18,7 @@ from .ozon_frontend import OzonFrontendClient
 from .repository import (
     finish_top_list_run,
     bulk_upsert_seller_home_skus,
+    bulk_upsert_seed_skus,
     upsert_seller_home_sku,
     get_seller_shop,
     get_recent_top_list_run,
@@ -399,37 +400,57 @@ def run_seller_network(
         selected_items = items[: sku_limit or None]
         prepared_items: list[tuple[str, dict[str, Any]]] = []
         home_rows_saved = 0
-        for item in selected_items:
-            try:
-                sku = upsert_seller_home_sku(url, item)
-            except Exception as exc:
-                vlog("seller-home sku upsert failed:", f"seller={url}", f"error={exc}", prefix="seller")
-                print("DEBUG: upsert_seller_home_sku failed:", exc)
-                continue
-            if not sku:
-                print("DEBUG: upsert_seller_home_sku returned empty sku for item:", item.get("title"))
-                continue
-            try:
-                upsert_seed_sku(sku, source=f"seller_home:{url}")
-            except Exception as exc:
-                vlog("seed_sku upsert failed:", f"sku={sku}", f"error={exc}", prefix="seller")
-                print("DEBUG: seed_sku upsert failed:", exc)
-            prepared_items.append((sku, item))
-            home_rows_saved += 1
-            if home_rows_saved % 50 == 0:
-                print(
-                    "  upsert progress:",
-                    f"done={home_rows_saved}/{len(selected_items)}",
-                    f"seller={url}",
-                )
-        if prepared_items:
+        prepare_stage_start = time.perf_counter()
+        try:
+            prepared_items = bulk_upsert_seller_home_skus(url, selected_items)
+            bulk_upsert_seed_skus([sku for sku, _ in prepared_items], source=f"seller_home:{url}")
+            home_rows_saved = len(prepared_items)
+            prepare_elapsed = time.perf_counter() - prepare_stage_start
             print(
                 "seller home skus prepared:",
                 f"seller={url}",
                 f"raw_items={len(items)}",
                 f"selected={len(selected_items)}",
                 f"saved={home_rows_saved}",
+                "mode=batch",
+                f"elapsed={prepare_elapsed:.1f}s",
             )
+        except Exception as exc:
+            vlog("seller-home bulk prepare failed, fallback to row mode:", f"seller={url}", f"error={exc}", prefix="seller")
+            for item in selected_items:
+                try:
+                    sku = upsert_seller_home_sku(url, item)
+                except Exception as row_exc:
+                    vlog("seller-home sku upsert failed:", f"seller={url}", f"error={row_exc}", prefix="seller")
+                    print("DEBUG: upsert_seller_home_sku failed:", row_exc)
+                    continue
+                if not sku:
+                    print("DEBUG: upsert_seller_home_sku returned empty sku for item:", item.get("title"))
+                    continue
+                try:
+                    upsert_seed_sku(sku, source=f"seller_home:{url}")
+                except Exception as seed_exc:
+                    vlog("seed_sku upsert failed:", f"sku={sku}", f"error={seed_exc}", prefix="seller")
+                    print("DEBUG: seed_sku upsert failed:", seed_exc)
+                prepared_items.append((sku, item))
+                home_rows_saved += 1
+                if home_rows_saved % 50 == 0:
+                    print(
+                        "  upsert progress:",
+                        f"done={home_rows_saved}/{len(selected_items)}",
+                        f"seller={url}",
+                    )
+            if prepared_items:
+                prepare_elapsed = time.perf_counter() - prepare_stage_start
+                print(
+                    "seller home skus prepared:",
+                    f"seller={url}",
+                    f"raw_items={len(items)}",
+                    f"selected={len(selected_items)}",
+                    f"saved={home_rows_saved}",
+                    "mode=fallback",
+                    f"elapsed={prepare_elapsed:.1f}s",
+                )
 
         seller_prefetched_maozi: dict[str, tuple[dict[str, Any], str]] = {}
         seller_batch_prefetch_failed = False
@@ -459,6 +480,11 @@ def run_seller_network(
             except Exception as exc:
                 seller_batch_prefetch_failed = True
                 vlog("seller-home batch sku3 prefetch failed:", f"seller={url}", exc, prefix="seller")
+                print(
+                    "seller-home batch sku3 prefetch failed:",
+                    f"seller={url}",
+                    f"error={summarize_exception(exc)}",
+                )
 
         if prepared_items and (not browser.cdp_url or seller_batch_prefetch_failed or not seller_prefetched_maozi):
             reason = "batch sku3 unavailable"
