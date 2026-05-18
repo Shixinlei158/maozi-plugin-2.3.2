@@ -1062,11 +1062,47 @@ class BrowserOzonClient:
 
         raise RuntimeError("; ".join(errors))
 
+    def _find_maozi_page(self) -> Any | None:
+        """在已打开的页面中找一个 ozon.maozierp.com 页面（已登录的dashboard等）。"""
+        if self._context is None:
+            return None
+        try:
+            for page in self._context.pages:
+                try:
+                    url = page.url or ""
+                except Exception:
+                    continue
+                if "ozon.maozierp.com" in url:
+                    return page
+        except Exception:
+            pass
+        return None
+
     def _get_maozi_token(self, page: Any) -> str | None:
-        """获取并缓存毛子 token。仅在 token 未缓存时导航到 ext popup。"""
+        """获取并缓存毛子 token。优先用已打开的 dashboard 页面 localStorage。"""
         if self._cached_maozi_token is not None:
             return self._cached_maozi_token[0]
 
+        # 优先从已打开的 maozierp.com 页面取 localStorage token（无需导航）
+        maozi_page = self._find_maozi_page()
+        if maozi_page is not None:
+            result = maozi_page.evaluate("""
+                () => {
+                    try {
+                        const raw = localStorage.getItem('maozierp-core-access');
+                        if (raw) {
+                            const parsed = JSON.parse(raw);
+                            return parsed.accessToken || null;
+                        }
+                    } catch(e) {}
+                    return null;
+                }
+            """)
+            if result:
+                self._cached_maozi_token = (result, "localStorage")
+                return result
+
+        # 回退：导航到 ext popup 取 chrome.storage token
         target_url = self._extension_popup_url()
         try:
             current = page.url or ""
@@ -1103,7 +1139,9 @@ class BrowserOzonClient:
         if not token:
             return {}
 
-        raw = page.evaluate(
+        # 优先在已打开的 dashboard 页面上注入（复用其 cookies+origin）
+        inject_page = self._find_maozi_page() or page
+        raw = inject_page.evaluate(
             """
             async ({ skus, concurrency, timeoutMs, pluginVersion, token }) => {
               const items = Array.from(new Set((skus || []).map((sku) => String(sku).trim()).filter(Boolean)));
