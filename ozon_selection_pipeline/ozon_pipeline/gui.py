@@ -606,13 +606,8 @@ class App:
                 info["plugin"] = "检测失败"
 
             try:
-                from .db import connect
-                conn = connect()
-                cur = conn.cursor()
-                cur.execute("SELECT COUNT(*) AS cnt FROM seller_shops")
-                info["seller_count"] = cur.fetchone()["cnt"]
-                cur.close()
-                conn.close()
+                from . import db
+                info["seller_count"] = db.fetch_one("SELECT COUNT(*) AS cnt FROM seller_shops")["cnt"]
                 info["db"] = f"已连接 ({info['seller_count']} 卖家)"
             except Exception as exc:
                 info["db"] = f"错误: {exc}"

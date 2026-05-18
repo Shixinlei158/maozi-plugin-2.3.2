@@ -1202,13 +1202,21 @@ class BrowserOzonClient:
 
     def _fetch_seller_home_products_api(self, page: Any, seller_url: str, deadline: float | None = None) -> dict[str, Any]:
         # Must be on an Ozon page for same-origin credentials to work.
-        # Direct navigation to seller page triggers antibot; Ozon main page is sufficient.
+        # Direct navigation to seller page triggers antibot → go through main page first,
+        # then navigate to seller for visual feedback.
         if not page.url.startswith(OZON_BASE):
             remaining = (deadline - time.time()) * 1000 if deadline else 120000
             if remaining <= 0:
                 raise RuntimeError("Timeout before navigation")
             page.goto(OZON_BASE, wait_until="domcontentloaded", timeout=min(remaining, 30000))
             page.wait_for_timeout(2000)
+        # Navigate to seller page for visual feedback (user can see progress)
+        if page.url != seller_url:
+            remaining = (deadline - time.time()) * 1000 if deadline else 120000
+            if remaining <= 0:
+                raise RuntimeError("Timeout before navigation to seller page")
+            page.goto(seller_url, wait_until="domcontentloaded", timeout=min(remaining, 30000))
+            page.wait_for_timeout(1500)
             
         seller_path = extract_relative_url(seller_url)
         all_items: list[dict[str, Any]] = []
