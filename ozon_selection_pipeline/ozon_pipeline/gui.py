@@ -676,7 +676,7 @@ class App:
         self._logger = _GuiSummaryLogger(self._log_queue)
         self._append_log(f"===== 开始采集 | 模式: {mode} =====\n")
         self._append_log(f"CDP 浏览器已连接: {cdp_url}\n")
-        self._append_log("GUI日志策略: 仅显示关键事件，并约每6-9分钟输出一次运行汇总。\n")
+        self._append_log("全量实时日志已启用，每1-2分钟输出一次运行汇总。\n")
 
         sys.stdout = self._logger
         sys.stderr = self._logger
