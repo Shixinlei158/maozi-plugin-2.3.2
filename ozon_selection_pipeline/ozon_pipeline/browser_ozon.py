@@ -1061,54 +1061,13 @@ class BrowserOzonClient:
             errors.append(f"site token request error: {exc}")
 
         raise RuntimeError("; ".join(errors))
-
-    def _find_maozi_page(self) -> Any | None:
-        """在已打开的页面中找一个 ozon.maozierp.com 页面（已登录的dashboard等）。"""
-        if self._context is None:
-            return None
-        try:
-            for page in self._context.pages:
-                try:
-                    url = page.url or ""
-                except Exception:
-                    continue
-                if "ozon.maozierp.com" in url:
-                    return page
-        except Exception:
-            pass
-        return None
-
-    def _get_maozi_token(self, page: Any) -> str | None:
-        """获取并缓存毛子 token。优先用已打开的 dashboard 页面 localStorage。"""
-        if self._cached_maozi_token is not None:
-            return self._cached_maozi_token[0]
-
-        # 优先从已打开的 maozierp.com 页面取 localStorage token（无需导航）
-        maozi_page = self._find_maozi_page()
-        if maozi_page is not None:
-            result = maozi_page.evaluate("""
-                () => {
-                    try {
-                        const raw = localStorage.getItem('maozierp-core-access');
-                        if (raw) {
-                            const parsed = JSON.parse(raw);
-                            return parsed.accessToken || null;
-                        }
-                    } catch(e) {}
-                    return null;
-                }
-            """)
-            if result:
-                print(f"[token] got from dashboard localStorage (len={len(result)})")
-                self._cached_maozi_token = (result, "localStorage")
-                return result
-            else:
-                print("[token] dashboard found but localStorage has no accessToken")
-
-        # 回退：导航到 ext popup 取 chrome.storage token
-        print("[token] no dashboard page or no token, falling back to ext popup")
-
-        # 回退：导航到 ext popup 取 chrome.storage token
+    def _fetch_top_list_sku3_batch(
+        self,
+        page: Any,
+        skus: list[str],
+        concurrency: int,
+    ) -> dict[str, dict[str, Any]]:
+        # 导航到 ext popup（取 chrome.storage token 的唯一可靠入口）
         target_url = self._extension_popup_url()
         try:
             current = page.url or ""
@@ -1118,129 +1077,63 @@ class BrowserOzonClient:
             page.goto(target_url, wait_until="load", timeout=15000)
             page.wait_for_timeout(800)
 
-        result = page.evaluate("""
-            async () => {
-                let token = null;
-                for (let i = 0; i < 8 && !token; i++) {
-                    if (i > 0) await new Promise(r => setTimeout(r, 500));
-                    try {
-                        const s = await chrome.storage.local.get(["maozierp-token"]);
-                        token = s["maozierp-token"];
-                    } catch(e) {}
-                }
-                return token || null;
-            }
-        """)
-        if result:
-            self._cached_maozi_token = (result, "extension_storage")
-        return result
-
-    def _fetch_top_list_sku3_batch(
-        self,
-        page: Any,
-        skus: list[str],
-        concurrency: int,
-    ) -> dict[str, dict[str, Any]]:
-        token = self._get_maozi_token(page)
-        if not token:
-            return {}
-
-        # 优先在已打开的 dashboard 页面上注入（复用其 cookies+origin）
-        inject_page = self._find_maozi_page() or page
-        raw = inject_page.evaluate(
+        timeout_ms = min(max(settings.request_timeout_seconds * 1000, 5000), 30000)
+        raw = page.evaluate(
             """
-            async ({ skus, concurrency, timeoutMs, pluginVersion, token }) => {
-              const items = Array.from(new Set((skus || []).map((sku) => String(sku).trim()).filter(Boolean)));
+            async ({ skus, concurrency, timeoutMs, pluginVersion }) => {
+              let token = null;
+              for (let i = 0; i < 8 && !token; i++) {
+                if (i > 0) await new Promise(r => setTimeout(r, 500));
+                try {
+                  const s = await chrome.storage.local.get(["maozierp-token"]);
+                  token = s["maozierp-token"];
+                } catch(e) {}
+              }
+              if (!token) return {};
+
+              const items = Array.from(new Set((skus || []).map(sku => String(sku).trim()).filter(Boolean)));
               const results = {};
               let nextIndex = 0;
-              const workerTotal = Math.max(1, Math.min(Number(concurrency) || 1, items.length));
+              const workerTotal = Math.max(1, Math.min(Number(concurrency)||1, items.length));
 
               async function fetchOne(sku) {
-                const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), timeoutMs);
+                const ctrl = new AbortController();
+                const t = setTimeout(() => ctrl.abort(), timeoutMs);
                 try {
-                  const response = await fetch(`https://api.maozierp.com/api.chrome/sku3?sku=${encodeURIComponent(sku)}`, {
-                    method: 'POST',
-                    credentials: 'include',
-                    signal: controller.signal,
-                    headers: {
-                      'Accept': 'application/json, text/plain, */*',
-                      'Authorization': `Bearer ${token}`,
-                      'Client': 'plugin',
-                      'Plugin-Version': pluginVersion,
-                      'Content-Type': 'application/json',
-                      'User-Agent': 'Mozilla/5.0'
-                    },
-                    body: JSON.stringify({ sku: String(sku) })
+                  const r = await fetch(`https://api.maozierp.com/api.chrome/sku3?sku=${encodeURIComponent(sku)}`, {
+                    method:'POST', credentials:'include', signal:ctrl.signal,
+                    headers:{'Accept':'application/json','Authorization':`Bearer ${token}`,'Client':'plugin','Plugin-Version':pluginVersion,'Content-Type':'application/json','User-Agent':'Mozilla/5.0'},
+                    body:JSON.stringify({sku:String(sku)})
                   });
-                  const text = await response.text();
-                  let data = null;
-                  try {
-                    data = JSON.parse(text);
-                  } catch (error) {
-                  }
-                  results[sku] = {
-                    ok: response.ok,
-                    status: response.status,
-                    text,
-                    data
-                  };
-                } catch (error) {
-                  results[sku] = {
-                    ok: false,
-                    status: 0,
-                    text: '',
-                    data: null,
-                    error: String(error && error.message ? error.message : error)
-                  };
-                } finally {
-                  clearTimeout(timer);
-                }
+                  const text = await r.text(); let data = null; try{data=JSON.parse(text);}catch(e){}
+                  results[sku]={ok:r.ok,status:r.status,text,data};
+                } catch(err) {
+                  results[sku]={ok:false,status:0,text:'',data:null,error:String(err?.message||err)};
+                } finally { clearTimeout(t); }
               }
-
-              async function worker() {
-                while (true) {
-                  const index = nextIndex++;
-                  if (index >= items.length) {
-                    return;
-                  }
-                  await fetchOne(items[index]);
-                }
-              }
-
-              await Promise.all(Array.from({ length: workerTotal }, () => worker()));
-              return results;
+              async function worker(){while(true){const i=nextIndex++;if(i>=items.length)return;await fetchOne(items[i]);}}
+              const s = Date.now();
+              await Promise.all(Array.from({length:workerTotal},()=>worker()));
+              return {results,elapsedMs:Date.now()-s};
             }
             """,
             {
-                "skus": [str(sku) for sku in skus],
+                "skus": [str(s) for s in skus],
                 "concurrency": int(concurrency),
-                "timeoutMs": min(max(settings.request_timeout_seconds * 1000, 5000), 30000),
+                "timeoutMs": timeout_ms,
                 "pluginVersion": settings.maozi_plugin_version,
-                "token": token,
             },
         )
-        if not isinstance(raw, dict):
-            raise RuntimeError("top-list sku3 batch returned invalid payload")
+
+        if not isinstance(raw, dict) or "results" not in raw:
+            return {}
         results: dict[str, dict[str, Any]] = {}
-        cf_count = 0
         for sku in skus:
-            payload = raw.get(str(sku))
+            payload = (raw["results"] or {}).get(str(sku))
             if not isinstance(payload, dict):
                 continue
-            response_text = str(payload.get("text") or payload.get("error") or "")
-            lowered = response_text.lower()
-            if any(marker.lower() in lowered for marker in MAOZI_CHALLENGE_MARKERS):
-                cf_count += 1
-                continue
-            if payload.get("ok"):
-                data = payload.get("data")
-                if isinstance(data, dict):
-                    results[str(sku)] = data
-            continue
-        # 仅当大部分SKU都CF时才算真CF（避免单SKU误判炸整批）
-        if cf_count > 0 and cf_count >= len(skus) * 0.5:
-            raise RuntimeError(f"maozierp Cloudflare: {cf_count}/{len(skus)} SKUs blocked; manual verification required")
+            if payload.get("ok") and isinstance(payload.get("data"), dict):
+                results[str(sku)] = payload["data"]
         return results
 
     def _fetch_plugin_card_snapshot(self, page: Any, sku: str) -> dict[str, Any]:
