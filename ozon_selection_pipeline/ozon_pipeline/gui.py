@@ -63,45 +63,6 @@ class _GuiSummaryLogger:
         self._offers = 0
         self._last_seller = ""
         self._queue_length = 0
-        self._important_prefixes = (
-            "=====",
-            "browser mode:",
-            "browser preflight",
-            "expand-network round",
-            "expand-network complete",
-            "expand-network empty",
-            "expand-network final summary",
-            "expand-network: no new sellers",
-            "crawl seller:",
-            "skip recent seller:",
-            "seller home skus prepared:",
-            "seller summary:",
-            "  qualified sku:",
-            "  sku:",
-            "seed sku:",
-            "skip seller",
-            "manual action required",
-            "error:",
-            "DEBUG:",
-            "Traceback",
-            "  File ",
-            "pymysql",
-            "sqlalchemy",
-            "requests",
-            "playwright",
-            "RuntimeError",
-            "OperationalError",
-            "ConnectionError",
-            "TimeoutError",
-            "ConnectionRefused",
-            "CDP 浏览器已连接",
-            "prefetch SKU3 batch:",
-            "seed-pool summary:",
-            "seed-pool expansion summary:",
-            "stored qualified sku:",
-            "network crawl summary:",
-        )
-        self._in_error_block = False
 
     def _set_next_interval(self):
         interval_minutes = random.uniform(1, 2)
@@ -124,28 +85,12 @@ class _GuiSummaryLogger:
     def _handle_line(self, line: str) -> None:
         stripped = line.strip()
         if not stripped:
-            self._in_error_block = False
             return
         self._update_counters(stripped)
+        self._queue.put(stripped + "\n")
         now = datetime.now()
-        if self._should_emit(stripped):
-            self._in_error_block = stripped.startswith(("Traceback", "  File "))
-            self._queue.put(stripped + "\n")
-            return
-        if self._in_error_block:
-            self._queue.put(stripped + "\n")
-            return
         if now >= self._next_summary_at:
             self.emit_summary(now)
-
-    def _should_emit(self, line: str) -> bool:
-        if line.startswith(self._important_prefixes):
-            return True
-        return any(
-            keyword in line
-            for keyword in ("OperationalError", "InterfaceError", "TimeoutError",
-                           "ConnectionError", "ConnectionRefused", "ECONNREFUSED")
-        )
 
     def _update_counters(self, line: str) -> None:
         if line.startswith("crawl seller:"):
