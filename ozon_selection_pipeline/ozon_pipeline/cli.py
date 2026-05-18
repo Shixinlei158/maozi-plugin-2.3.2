@@ -1512,10 +1512,8 @@ def add_top_list_options(parser: argparse.ArgumentParser) -> None:
 
 
 def load_seller_offers(sku: str, browser: BrowserOzonClient) -> list[dict[str, Any]]:
-    try:
-        return OzonFrontendClient().seller_offers(sku)
-    except Exception:
-        return browser.seller_offers(sku)
+    # Ozon entrypoint API requires browser cookies/fingerprint; pure requests always returns 403.
+    return browser.seller_offers(sku)
 
 
 def load_seller_home_products(seller_url: str, browser: BrowserOzonClient, *, max_scrolls: int = 8) -> dict[str, Any]:
