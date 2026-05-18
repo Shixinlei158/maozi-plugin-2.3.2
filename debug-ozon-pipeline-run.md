@@ -63,9 +63,35 @@
   - 最新 `sku_universe` 行更新时间推进到 `2026-05-19 01:51:06`
   - 最新 SKU 示例：`4281743517`
 
-## 当前状态
+## 性能瓶颈分析与优化记录 (2026-05-19)
 
-- 单 SKU 采集链路已验证可采到数据并落库。
-- 当前默认生产入口脚本未能正常跑通，已确认存在 `9223` 与 `9222` 的端口不一致问题。
-- GUI 入口已成功启动。
-- 按 GUI 当前默认策略的生产采集已启动并持续运行中，已确认开始消费卖家 backlog，并持续写入 `sku_universe`。
+### 观察到的症状
+- 处理包含 800 个 SKU 的大卖家时，耗时显著。
+- 日志显示 `crawl seller` 仅需 75s，但随后的处理阶段在 6 分钟内未产出 summary。
+- 卖家 SKU 准备阶段（upsert 列表）在大样本下非常缓慢（曾观测到 377 SKU 耗时 174s）。
+
+### 核心原因分析
+1. **频繁的同步数据库 IO**：原流程中每个 SKU 处理都会触发 3-4 次同步数据库 `INSERT/UPDATE`（`sku_universe`, `sku_plugin_metrics`, `sku_products`, `seed_pool_skus`）。对于 800 SKU 的卖家，这意味着约 3000 次 DB 往返，由于数据库通常处于穿透或公网环境，延迟被极度放大。
+2. **并发瓶颈**：默认 `seller_sku_workers=3` 且受限于浏览器全局锁。即使在 `batch_only_mode` 下不需要真实浏览器操作，低并发数也限制了 DB 吞吐。
+3. **冗余逻辑**：`process_sku` 内部存在多次冗余的规则判定和 DB 写入。
+
+### 实施的优化方案
+1. **全链路批量写库**：
+   - 在 [repository.py](file:///c:/project/maozi-plugin-2.3.2/ozon_selection_pipeline/ozon_pipeline/repository.py) 中新增 `bulk_upsert_sku_results` 和 `bulk_upsert_sku_universe_full`。
+   - 将零散的单条 SQL 更新合并为 `execute_many` 批量操作，大幅减少网络往返次数。
+2. **处理流程瘦身**：
+   - 修改 [cli.py](file:///c:/project/maozi-plugin-2.3.2/ozon_selection_pipeline/ozon_pipeline/cli.py) 的 `process_sku`，支持 `skip_db=True` 模式，在批量处理时不执行任何单条写库，仅返回数据结构。
+3. **大幅提升并发度**：
+   - 默认 `seller_sku_workers` 从 3 提升至 6。
+   - 在 `run_seller_network` 的批量模式下，worker 数量临时提升至原配置的 3 倍（最高 16），充分利用 DB 吞吐。
+4. **批量预取参数调优**：
+   - 修改 [config.py](file:///c:/project/maozi-plugin-2.3.2/ozon_selection_pipeline/ozon_pipeline/config.py)，将 SKU3 批量大小从 40 提升至 60，并发从 12 提升至 16，批次延迟从 500ms 降至 100ms。
+
+### 预期效果
+- 800 SKU 卖家的处理时长预计从 10 分钟以上缩短至 3-5 分钟以内。
+- 准备阶段（prepared items）的 DB 耗时应有量级下降。
+
+## 当前状态
+- 代码已完成性能优化并保存至 Git。
+- GUI 已具备更强的观测能力。
+- 准备重新启动生产采集进行验证。
