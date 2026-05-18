@@ -342,8 +342,10 @@ def run_seller_network(
             )
             continue
 
+        crawl_start = time.perf_counter()
         try:
             result = load_seller_home_products(url, browser, max_scrolls=max_scrolls)
+            crawl_elapsed = time.perf_counter() - crawl_start
             items = result.get("items") or []
             source = result.get("source") or "unknown"
             vlog(
@@ -367,6 +369,8 @@ def run_seller_network(
                 source,
                 "| items=",
                 len(items),
+                "| crawl=",
+                f"{crawl_elapsed:.1f}s",
             )
         except Exception as exc:
             detail = summarize_exception(exc)
@@ -425,10 +429,19 @@ def run_seller_network(
         seller_batch_prefetch_failed = False
         if prepared_items and browser.cdp_url:
             try:
+                prefetch_start = time.perf_counter()
                 seller_prefetched_maozi = prefetch_top_list_maozi_batch(
                     [sku for sku, _ in prepared_items],
                     maozi=maozi,
                     browser=browser,
+                )
+                prefetch_elapsed = time.perf_counter() - prefetch_start
+                print(
+                    "prefetch SKU3 batch:",
+                    f"seller={url}",
+                    f"requested={len(prepared_items)}",
+                    f"fetched={len(seller_prefetched_maozi)}",
+                    f"elapsed={prefetch_elapsed:.1f}s",
                 )
                 vlog(
                     "seller-home batch sku3 prefetched:",
@@ -580,6 +593,7 @@ def run_seller_network(
 
         mark_seller_collected(key)
         processed_sellers += 1
+        total_elapsed = time.perf_counter() - crawl_start
         print(
             "seller summary:",
             f"skus={seller_skus}",
@@ -588,6 +602,7 @@ def run_seller_network(
             f"deferred={seller_deferred}",
             f"skipped={seller_skipped}",
             f"offers={seller_offer_rows}",
+            f"total={total_elapsed:.1f}s",
         )
 
         if unlimited_depth or depth < max_depth:

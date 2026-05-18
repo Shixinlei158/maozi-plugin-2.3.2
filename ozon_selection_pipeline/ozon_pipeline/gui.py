@@ -73,11 +73,16 @@ class _GuiSummaryLogger:
             "expand-network final summary",
             "expand-network: no new sellers",
             "crawl seller:",
+            "skip recent seller:",
+            "seller home skus prepared:",
             "seller summary:",
             "  qualified sku:",
+            "  sku:",
+            "seed sku:",
             "skip seller",
             "manual action required",
             "error:",
+            "DEBUG:",
             "Traceback",
             "  File ",
             "pymysql",
@@ -90,12 +95,16 @@ class _GuiSummaryLogger:
             "TimeoutError",
             "ConnectionRefused",
             "CDP 浏览器已连接",
+            "prefetch SKU3 batch:",
+            "seed-pool summary:",
+            "seed-pool expansion summary:",
+            "stored qualified sku:",
+            "network crawl summary:",
         )
         self._in_error_block = False
 
     def _set_next_interval(self):
-        # 6-9 minutes random interval
-        interval_minutes = random.uniform(6, 9)
+        interval_minutes = random.uniform(1, 2)
         self._next_summary_at = datetime.now() + timedelta(minutes=interval_minutes)
 
     def write(self, text: str) -> None:
