@@ -417,6 +417,12 @@ def run_seller_network(
             )
         except Exception as exc:
             vlog("seller-home bulk prepare failed, fallback to row mode:", f"seller={url}", f"error={exc}", prefix="seller")
+            print(
+                "WARN: bulk_upsert_seller_home_skus failed, falling back to row-by-row:",
+                f"seller={url}",
+                f"error={summarize_exception(exc)}",
+            )
+            row_start = time.perf_counter()
             for item in selected_items:
                 try:
                     sku = upsert_seller_home_sku(url, item)
@@ -526,7 +532,7 @@ def run_seller_network(
             processed_sellers += 1
             continue
 
-        if not prepared_items:
+        if prepared_items:
             vlog("seller-home no items found/saved, skipping completion", f"seller={url}", prefix="seller")
             mark_seller_collected(key)
             processed_sellers += 1
@@ -616,19 +622,38 @@ def run_seller_network(
                 rejected_skus += 1
 
         if seller_sku_workers <= 1 or len(prepared_items) <= 1:
+            rule_start = time.perf_counter()
             for entry in prepared_items:
                 consume_seller_home_result(process_seller_home_item(entry))
+            rule_elapsed = time.perf_counter() - rule_start
         else:
             # 批量模式下不涉及浏览器竞争，增加 worker 数量以提高 DB 吞吐
             effective_workers = min(seller_sku_workers * 3, 16)
+            rule_start = time.perf_counter()
             with ThreadPoolExecutor(max_workers=effective_workers) as executor:
                 futures = [executor.submit(process_seller_home_item, entry) for entry in prepared_items]
                 for future in as_completed(futures):
                     consume_seller_home_result(future.result())
+            rule_elapsed = time.perf_counter() - rule_start
+        print(
+            "phase: rule evaluation done:",
+            f"seller={url}",
+            f"skus={seller_skus}",
+            f"workers={effective_workers if seller_sku_workers > 1 and len(prepared_items) > 1 else 1}",
+            f"elapsed={rule_elapsed:.1f}s",
+        )
 
         # 卖家所有 SKU 处理完后，统一执行批量写库
         if seller_results:
+            db_write_start = time.perf_counter()
             bulk_upsert_sku_results(seller_results, source=f"seller_home:{url}")
+            db_write_elapsed = time.perf_counter() - db_write_start
+            print(
+                "phase: bulk write results:",
+                f"seller={url}",
+                f"rows={len(seller_results)}",
+                f"elapsed={db_write_elapsed:.1f}s",
+            )
 
         mark_seller_collected(key)
         processed_sellers += 1

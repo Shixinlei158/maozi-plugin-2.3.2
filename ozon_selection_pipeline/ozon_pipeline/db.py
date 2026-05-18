@@ -117,25 +117,59 @@ def execute_many(sql: str, params: Iterable[dict[str, Any]]) -> int:
 
 
 def execute_insert_many(sql: str, params: list[dict[str, Any]], *, batch_size: int = 0) -> int:
-    """批量 INSERT（使用 PyMySQL executemany，单次往返合并多行）。
-    
-    sql 使用 PyMySQL %(name)s 占位符（不经过 _prepare_sql 转换）。
-    当 batch_size > 0 时，将 params 分批执行以控制单次数据包大小。
+    """批量 INSERT：将模板 SQL 转为单条多 VALUES 语句执行。
+
+    sql 使用 PyMySQL %(name)s 占位符，如:
+      INSERT INTO t (a, b) VALUES (%(a)s, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE ...
+    自动为每行生成唯一参数名，合成一条多 VALUES 的 INSERT 执行。
+    VALUES 中可混用 %(name)s 参数和字面值（CURRENT_TIMESTAMP / NULL 等）。
     """
     param_list = list(params)
     if not param_list:
         return 0
 
+    import re as _re
+
+    # 拆分 SQL：抓出 VALUES (...) 中的内容以及前缀/后缀
+    m = _re.match(
+        r'(.*?VALUES)\s*\(((?:[^()]|%\([^)]*\)[^()]?)*)\)\s*(ON\s+DUPLICATE\s+KEY\s+UPDATE.*)',
+        sql, _re.DOTALL | _re.IGNORECASE
+    )
+    if not m:
+        m = _re.match(
+            r'(.*?VALUES)\s*\(((?:[^()]|%\([^)]*\)[^()]?)*)\)\s*$',
+            sql, _re.DOTALL | _re.IGNORECASE
+        )
+    if not m:
+        raise ValueError(f"execute_insert_many: cannot parse INSERT template: {sql[:200]}")
+
+    prefix = m.group(1)
+    row_body = m.group(2).strip()
+    suffix = m.group(3).strip() if m.lastindex and m.lastindex >= 3 else ""
+
     def _do_one(batch: list[dict[str, Any]]) -> int:
+        if not batch:
+            return 0
+        parts = []
+        flat = {}
+        for i, row in enumerate(batch):
+            # 替换每个 %(name)s 为 %(rN_name)s，保留字面值
+            def _replace(mo):
+                name = mo.group(1)
+                pn = f"r{i}_{name}"
+                flat[pn] = row.get(name)
+                return f"%({pn})s"
+            replaced = _re.sub(r'%\((\w+)\)s', _replace, row_body)
+            parts.append(f"({replaced})")
+
+        full_sql = f"{prefix} {', '.join(parts)}"
+        if suffix:
+            full_sql += f" {suffix}"
+
         engine = get_engine()
         with engine.begin() as conn:
-            raw = conn.connection
-            cursor = raw.cursor()
-            try:
-                cursor.executemany(sql, batch)
-                return cursor.rowcount
-            finally:
-                cursor.close()
+            result = conn.execute(text(_prepare_sql(full_sql)), flat)
+            return result.rowcount
 
     if batch_size and len(param_list) > batch_size:
         total = 0
