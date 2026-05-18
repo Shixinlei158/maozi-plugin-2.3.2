@@ -1071,8 +1071,8 @@ class BrowserOzonClient:
         except Exception:
             current_url = ""
         if current_url != target_url:
-            page.goto(target_url, wait_until="domcontentloaded", timeout=10000)
-            page.wait_for_timeout(300)
+            page.goto(target_url, wait_until="load", timeout=15000)
+            page.wait_for_timeout(800)
 
         raw = page.evaluate(
             """
@@ -1161,61 +1161,9 @@ class BrowserOzonClient:
             },
         )
         if isinstance(raw, dict) and raw.get("_needs_fallback"):
-            self._ensure_maozi_selection_ready(page)
-            page.wait_for_timeout(300)
-            raw = page.evaluate(
-                """
-                async ({ skus, concurrency, timeoutMs, pluginVersion }) => {
-                  const access = JSON.parse(localStorage.getItem("maozierp-core-access") || "{}");
-                  const token = access.accessToken || "";
-                  if (!token) {
-                    throw new Error("maozierp-core-access.accessToken is missing in localStorage");
-                  }
-                  const items = Array.from(new Set((skus || []).map((sku) => String(sku).trim()).filter(Boolean)));
-                  const results = {};
-                  let nextIndex = 0;
-                  const workerTotal = Math.max(1, Math.min(Number(concurrency) || 1, items.length));
-                  async function fetchOne(sku) {
-                    const controller = new AbortController();
-                    const timer = setTimeout(() => controller.abort(), timeoutMs);
-                    try {
-                      const response = await fetch(`https://api.maozierp.com/api.chrome/sku3?sku=${encodeURIComponent(sku)}`, {
-                        method: "POST", credentials: "include", signal: controller.signal,
-                        headers: {
-                          "Accept": "application/json, text/plain, */*",
-                          "Authorization": `Bearer ${token}`,
-                          "Client": "pc",
-                          "Content-Type": "application/json",
-                          "DNT": "1"
-                        },
-                        body: JSON.stringify({ sku: String(sku) })
-                      });
-                      const text = await response.text();
-                      let data = null;
-                      try { data = JSON.parse(text); } catch(e) {}
-                      results[sku] = { ok: response.ok, status: response.status, text, data };
-                    } catch(error) {
-                      results[sku] = { ok: false, status: 0, text: "", data: null, error: String(error && error.message ? error.message : error) };
-                    } finally { clearTimeout(timer); }
-                  }
-                  async function worker() {
-                    while (true) {
-                      const index = nextIndex++;
-                      if (index >= items.length) return;
-                      await fetchOne(items[index]);
-                    }
-                  }
-                  await Promise.all(Array.from({ length: workerTotal }, () => worker()));
-                  return results;
-                }
-                """,
-                {
-                    "skus": [str(sku) for sku in skus],
-                    "concurrency": int(concurrency),
-                    "timeoutMs": min(max(settings.request_timeout_seconds * 1000, 5000), 30000),
-                    "pluginVersion": settings.maozi_plugin_version,
-                },
-            )
+            # Maozi 网站被 Cloudflare 封禁，不 fallback 到 localStorage 路径
+            # 扩展 popup chrome.storage token 不可用时直接返回空，单 SKU 标记 batch_skipped
+            return {}
         if not isinstance(raw, dict):
             raise RuntimeError("top-list sku3 batch returned invalid payload")
         results: dict[str, dict[str, Any]] = {}

@@ -505,34 +505,31 @@ def run_seller_network(
                     f"error={summarize_exception(exc)}",
                 )
 
-        if prepared_items and (not browser.cdp_url or seller_batch_prefetch_failed or not seller_prefetched_maozi):
-            reason = "batch sku3 unavailable"
-            if not browser.cdp_url:
-                reason = "batch sku3 requires CDP browser"
-            elif seller_batch_prefetch_failed:
-                reason = "batch sku3 request failed"
+        # 无 CDP 或 batch 明确失败且无任何数据时才跳过卖家
+        if not browser.cdp_url:
             print(
                 "skip seller:",
                 url,
-                "| reason=",
-                reason,
+                "| reason= batch sku3 requires CDP browser",
                 "| requested=",
                 len(prepared_items),
             )
-            vlog(
-                "seller-home batch-only skip seller:",
-                {
-                    "seller": url,
-                    "reason": reason,
-                    "requested": len(prepared_items),
-                },
-                prefix="seller",
+            mark_seller_collected(key)
+            processed_sellers += 1
+            continue
+        if seller_batch_prefetch_failed and not seller_prefetched_maozi:
+            print(
+                "skip seller:",
+                url,
+                "| reason= batch sku3 request failed",
+                "| requested=",
+                len(prepared_items),
             )
             mark_seller_collected(key)
             processed_sellers += 1
             continue
 
-        if prepared_items:
+        if not prepared_items:
             vlog("seller-home no items found/saved, skipping completion", f"seller={url}", prefix="seller")
             mark_seller_collected(key)
             processed_sellers += 1
