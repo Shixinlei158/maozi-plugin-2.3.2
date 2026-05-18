@@ -1077,13 +1077,17 @@ class BrowserOzonClient:
         raw = page.evaluate(
             """
             async ({ skus, concurrency, timeoutMs, pluginVersion }) => {
-              const storage = await chrome.storage.local.get(["maozierp-token"]);
-              const token = storage["maozierp-token"];
+              // Try extension chrome.storage token first
+              let token = null;
+              let tokenSource = "";
+              try {
+                const storage = await chrome.storage.local.get(["maozierp-token"]);
+                token = storage["maozierp-token"];
+                if (token) tokenSource = "extension_storage";
+              } catch(e) {}
               if (!token) {
-                throw new Error("maozierp-token is missing in chrome.storage.local");
+                return { _needs_fallback: true, _reason: "maozierp-token missing in chrome.storage.local" };
               }
-              const items = Array.from(new Set((skus || []).map((sku) => String(sku).trim()).filter(Boolean)));
-              const results = {};
               let nextIndex = 0;
               const workerTotal = Math.max(1, Math.min(Number(concurrency) || 1, items.length));
 
@@ -1151,6 +1155,62 @@ class BrowserOzonClient:
                 "pluginVersion": settings.maozi_plugin_version,
             },
         )
+        if isinstance(raw, dict) and raw.get("_needs_fallback"):
+            self._ensure_maozi_selection_ready(page)
+            page.wait_for_timeout(500)
+            raw = page.evaluate(
+                """
+                async ({ skus, concurrency, timeoutMs, pluginVersion }) => {
+                  const access = JSON.parse(localStorage.getItem("maozierp-core-access") || "{}");
+                  const token = access.accessToken || "";
+                  if (!token) {
+                    throw new Error("maozierp-core-access.accessToken is missing in localStorage");
+                  }
+                  const items = Array.from(new Set((skus || []).map((sku) => String(sku).trim()).filter(Boolean)));
+                  const results = {};
+                  let nextIndex = 0;
+                  const workerTotal = Math.max(1, Math.min(Number(concurrency) || 1, items.length));
+                  async function fetchOne(sku) {
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), timeoutMs);
+                    try {
+                      const response = await fetch(`https://api.maozierp.com/api.chrome/sku3?sku=${encodeURIComponent(sku)}`, {
+                        method: "POST", credentials: "include", signal: controller.signal,
+                        headers: {
+                          "Accept": "application/json, text/plain, */*",
+                          "Authorization": `Bearer ${token}`,
+                          "Client": "pc",
+                          "Content-Type": "application/json",
+                          "DNT": "1"
+                        },
+                        body: JSON.stringify({ sku: String(sku) })
+                      });
+                      const text = await response.text();
+                      let data = null;
+                      try { data = JSON.parse(text); } catch(e) {}
+                      results[sku] = { ok: response.ok, status: response.status, text, data };
+                    } catch(error) {
+                      results[sku] = { ok: false, status: 0, text: "", data: null, error: String(error && error.message ? error.message : error) };
+                    } finally { clearTimeout(timer); }
+                  }
+                  async function worker() {
+                    while (true) {
+                      const index = nextIndex++;
+                      if (index >= items.length) return;
+                      await fetchOne(items[index]);
+                    }
+                  }
+                  await Promise.all(Array.from({ length: workerTotal }, () => worker()));
+                  return results;
+                }
+                """,
+                {
+                    "skus": [str(sku) for sku in skus],
+                    "concurrency": int(concurrency),
+                    "timeoutMs": min(max(settings.request_timeout_seconds * 1000, 5000), 30000),
+                    "pluginVersion": settings.maozi_plugin_version,
+                },
+            )
         if not isinstance(raw, dict):
             raise RuntimeError("top-list sku3 batch returned invalid payload")
         results: dict[str, dict[str, Any]] = {}
