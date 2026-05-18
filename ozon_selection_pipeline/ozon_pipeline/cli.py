@@ -486,17 +486,6 @@ def run_seller_network(
             except ManualInterventionRequired:
                 raise
             except Exception as exc:
-                error_text = str(exc).lower()
-                if "cloudflare" in error_text:
-                    log_line(
-                        "maozi Cloudflare detected, pausing for manual verification",
-                        f"seller={url}",
-                        prefix="cloudflare",
-                    )
-                    raise ManualInterventionRequired(
-                        f"Maozi Cloudflare challenge detected during batch SKU3 prefetch for seller {url}. "
-                        f"Please solve the challenge in the browser window, then the collection will resume."
-                    ) from exc
                 seller_batch_prefetch_failed = True
                 vlog("seller-home batch sku3 prefetch failed:", f"seller={url}", exc, prefix="seller")
                 print(

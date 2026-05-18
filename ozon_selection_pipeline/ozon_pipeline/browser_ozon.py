@@ -999,8 +999,9 @@ class BrowserOzonClient:
                 response_text = str(result.get("text") or "")
                 lowered = response_text.lower()
                 if any(marker.lower() in lowered for marker in MAOZI_CHALLENGE_MARKERS):
-                    raise RuntimeError("maozierp Cloudflare challenge is active; manual verification is required")
-                errors.append(f"extension token request failed with HTTP {result.get('status')}: {response_text}")
+                    print(f"WARN: SKU3 single request returned Cloudflare page, skipping (sku={sku})")
+                else:
+                    errors.append(f"extension token request failed with HTTP {result.get('status')}: {response_text}")
         except Exception as exc:
             errors.append(f"extension token request error: {exc}")
 
@@ -1051,8 +1052,9 @@ class BrowserOzonClient:
                 response_text = str(result.get("text") or "")
                 lowered = response_text.lower()
                 if any(marker.lower() in lowered for marker in MAOZI_CHALLENGE_MARKERS):
-                    raise RuntimeError("maozierp Cloudflare challenge is active; manual verification is required")
-                errors.append(f"site token request failed with HTTP {result.get('status')}: {response_text}")
+                    print(f"WARN: SKU3 site-token path returned Cloudflare page, skipping (sku={sku})")
+                else:
+                    errors.append(f"site token request failed with HTTP {result.get('status')}: {response_text}")
         except Exception as exc:
             errors.append(f"site token request error: {exc}")
 
@@ -1441,7 +1443,7 @@ class BrowserOzonClient:
             or ""
         ).lower()
         if any(marker.lower() in challenge_text for marker in MAOZI_CHALLENGE_MARKERS):
-            raise RuntimeError("maozierp Cloudflare challenge is active; manual verification is required")
+            print(f"WARN: Maozi website returned Cloudflare challenge, skipping verification")
 
     def _extension_popup_url(self) -> str:
         return f"chrome-extension://{self.extension_id}/popup.html"
