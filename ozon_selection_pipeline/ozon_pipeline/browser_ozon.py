@@ -1139,12 +1139,21 @@ class BrowserOzonClient:
         if not isinstance(raw, dict) or "results" not in raw:
             return {}
         results: dict[str, dict[str, Any]] = {}
+        auth_failures = 0
         for sku in skus:
             payload = (raw["results"] or {}).get(str(sku))
             if not isinstance(payload, dict):
                 continue
+            status = payload.get("status", 0)
+            if status in (401, 403):
+                auth_failures += 1
             if payload.get("ok") and isinstance(payload.get("data"), dict):
                 results[str(sku)] = payload["data"]
+
+        # token 过期：清缓存，下次自动重取
+        if not results and auth_failures > 0 and self._cached_maozi_token is not None:
+            print("[token] cached token appears expired (HTTP 401/403), clearing cache for re-fetch")
+            self._cached_maozi_token = None
         return results
 
     def _fetch_plugin_card_snapshot(self, page: Any, sku: str) -> dict[str, Any]:
