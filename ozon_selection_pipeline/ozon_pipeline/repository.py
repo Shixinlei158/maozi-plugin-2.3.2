@@ -684,7 +684,7 @@ def bulk_upsert_sku_results(
         db.execute_many(
             """
             UPDATE seed_pool_skus 
-            SET status=%(status)s, rule_reason=%(reason)s, updated_at=%(now)s 
+            SET last_process_status=%(status)s, last_process_reason=%(reason)s, updated_at=%(now)s 
             WHERE sku=%(sku)s
             """,
             seed_status_rows
