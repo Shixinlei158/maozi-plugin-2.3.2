@@ -79,7 +79,8 @@ def _is_transient_error(exc: Exception) -> bool:
             code = getattr(orig, "args", [None])[0] if hasattr(orig, "args") else None
             if code in _TRANSIENT_ERROR_CODES:
                 return True
-        return True
+        # 无法确定错误码时不再盲目认为可重试
+        return False
     return False
 
 

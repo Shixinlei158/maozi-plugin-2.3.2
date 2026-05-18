@@ -446,7 +446,7 @@ def run_seller_network(
                         f"done={home_rows_saved}/{len(selected_items)}",
                         f"seller={url}",
                     )
-            if prepared_items:
+        if not prepared_items:
                 prepare_elapsed = time.perf_counter() - prepare_stage_start
                 print(
                     "seller home skus prepared:",
@@ -1985,7 +1985,7 @@ def process_sku(
                 f"failed to fetch maozi sku3 for sku {sku}; {summarize_exception(exc)}"
             ) from exc
     vlog("sku maozi source:", f"sku={sku}", f"maozi_source={maozi_source}", prefix="sku")
-    product_snapshot = product_snapshot_override or load_product_snapshot(sku, browser)
+    product_snapshot = product_snapshot_override if product_snapshot_override is not None else load_product_snapshot(sku, browser)
     plugin_card: dict[str, Any] = {
         "metric_overrides": {},
         "seller_offer_count": None,
