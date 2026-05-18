@@ -1219,6 +1219,7 @@ class BrowserOzonClient:
         if not isinstance(raw, dict):
             raise RuntimeError("top-list sku3 batch returned invalid payload")
         results: dict[str, dict[str, Any]] = {}
+        cf_count = 0
         for sku in skus:
             payload = raw.get(str(sku))
             if not isinstance(payload, dict):
@@ -1226,12 +1227,16 @@ class BrowserOzonClient:
             response_text = str(payload.get("text") or payload.get("error") or "")
             lowered = response_text.lower()
             if any(marker.lower() in lowered for marker in MAOZI_CHALLENGE_MARKERS):
-                raise RuntimeError("maozierp Cloudflare challenge is active; manual verification is required")
+                cf_count += 1
+                continue
             if payload.get("ok"):
                 data = payload.get("data")
                 if isinstance(data, dict):
                     results[str(sku)] = data
             continue
+        # 仅当大部分SKU都CF时才算真CF（避免单SKU误判炸整批）
+        if cf_count > 0 and cf_count >= len(skus) * 0.5:
+            raise RuntimeError(f"maozierp Cloudflare: {cf_count}/{len(skus)} SKUs blocked; manual verification required")
         return results
 
     def _fetch_plugin_card_snapshot(self, page: Any, sku: str) -> dict[str, Any]:
