@@ -627,8 +627,8 @@ def bulk_upsert_sku_results(
                 "sold_sum_rub": metric.get("sold_sum_rub"),
                 "sold_sum_cny": metric.get("sold_sum_cny"),
                 "sales_dynamics": metric.get("sales_dynamics"),
-                "maozi_fields_zh": build_maozi_fields_zh(metric, plugin_card=plugin_card, seller_offer_count=seller_offer_count),
-                "collected_at": now,
+                "maozi_fields_zh_json": build_maozi_fields_zh(metric, plugin_card=plugin_card, seller_offer_count=seller_offer_count),
+                "maozi_collected_at": now,
             }
             # 补齐其它 rfbs/fbp 字段... 这里简化一下，实际按需补全
             for f in ["rfbs_leq_1500", "rfbs_leq_5000", "rfbs_gt_5000", "fbp_leq_1500", "fbp_leq_5000", "fbp_gt_5000", 
@@ -672,11 +672,11 @@ def bulk_upsert_sku_results(
 
     if product_rows:
         columns = [c for c in product_rows[0].keys()]
-        updates = [f"{c}=VALUES({c})" for c in columns if c not in ("sku", "collected_at")]
+        updates = [f"{c}=VALUES({c})" for c in columns if c not in ("sku", "maozi_collected_at")]
         sql = f"""
             INSERT INTO sku_products ({",".join(columns)})
             VALUES ({",".join("%(" + c + ")s" for c in columns)})
-            ON DUPLICATE KEY UPDATE {",".join(updates)}, collected_at=VALUES(collected_at)
+            ON DUPLICATE KEY UPDATE {",".join(updates)}, maozi_collected_at=VALUES(maozi_collected_at)
         """
         db.execute_insert_many(sql, product_rows, batch_size=200)
 
@@ -722,14 +722,14 @@ def bulk_upsert_sku_universe_full(entries: list[dict[str, Any]]) -> None:
             "sold_sum_rub": metric.get("sold_sum_rub"),
             "sold_sum_cny": metric.get("sold_sum_cny"),
             "seller_offer_count": seller_offer_count,
-            "rule_name": selection_result.rule_name if selection_result else None,
-            "rule_matched": 1 if (selection_result and selection_result.matched) else 0,
-            "rule_reason": selection_result.summary if selection_result else None,
+            "formal_rule_name": selection_result.rule_name if selection_result else None,
+            "is_formal_qualified": 1 if (selection_result and selection_result.matched) else 0,
+            "formal_rule_reason": selection_result.summary if selection_result else None,
             "product_raw_json": json_dumps(product_data.get("raw")) if product_data.get("raw") else None,
-            "metric_raw_json": json_dumps(entry.get("metric_raw")) if entry.get("metric_raw") else None,
+            "maozi_raw_json": json_dumps(entry.get("metric_raw")) if entry.get("metric_raw") else None,
             "last_seen_at": now,
             "last_product_collected_at": now if product_data else None,
-            "last_metric_collected_at": now if metric else None,
+            "last_maozi_collected_at": now if metric else None,
         })
 
     if not rows:
