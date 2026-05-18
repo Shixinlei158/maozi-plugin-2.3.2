@@ -1067,30 +1067,40 @@ class BrowserOzonClient:
         skus: list[str],
         concurrency: int,
     ) -> dict[str, dict[str, Any]]:
-        # 导航到 ext popup（取 chrome.storage token 的唯一可靠入口）
-        target_url = self._extension_popup_url()
-        try:
-            current = page.url or ""
-        except Exception:
-            current = ""
-        if current != target_url:
-            page.goto(target_url, wait_until="load", timeout=15000)
-            page.wait_for_timeout(800)
+        # 首次调用时导航到 ext popup 取 token 并缓存，后续批次复用
+        if self._cached_maozi_token is None:
+            target_url = self._extension_popup_url()
+            try:
+                current = page.url or ""
+            except Exception:
+                current = ""
+            if current != target_url:
+                page.goto(target_url, wait_until="load", timeout=15000)
+                page.wait_for_timeout(800)
 
+            token_result = page.evaluate("""
+                async () => {
+                    let token = null;
+                    for (let i = 0; i < 8 && !token; i++) {
+                        if (i > 0) await new Promise(r => setTimeout(r, 500));
+                        try {
+                            const s = await chrome.storage.local.get(["maozierp-token"]);
+                            token = s["maozierp-token"];
+                        } catch(e) {}
+                    }
+                    return token || null;
+                }
+            """)
+            if token_result:
+                self._cached_maozi_token = token_result
+            else:
+                return {}
+
+        token = self._cached_maozi_token
         timeout_ms = min(max(settings.request_timeout_seconds * 1000, 5000), 30000)
         raw = page.evaluate(
             """
-            async ({ skus, concurrency, timeoutMs, pluginVersion }) => {
-              let token = null;
-              for (let i = 0; i < 8 && !token; i++) {
-                if (i > 0) await new Promise(r => setTimeout(r, 500));
-                try {
-                  const s = await chrome.storage.local.get(["maozierp-token"]);
-                  token = s["maozierp-token"];
-                } catch(e) {}
-              }
-              if (!token) return {};
-
+            async ({ skus, concurrency, timeoutMs, pluginVersion, token }) => {
               const items = Array.from(new Set((skus || []).map(sku => String(sku).trim()).filter(Boolean)));
               const results = {};
               let nextIndex = 0;
@@ -1122,6 +1132,7 @@ class BrowserOzonClient:
                 "concurrency": int(concurrency),
                 "timeoutMs": timeout_ms,
                 "pluginVersion": settings.maozi_plugin_version,
+                "token": token,
             },
         )
 
