@@ -193,12 +193,23 @@ class BrowserOzonClient:
         self._playwright_cm = sync_playwright()
         self._playwright = self._playwright_cm.__enter__()
         if self.cdp_url:
-            try:
-                self._browser = self._playwright.chromium.connect_over_cdp(self.cdp_url)
-            except Exception:
-                self.launch_real_chrome()
-                time.sleep(3)
-                self._browser = self._playwright.chromium.connect_over_cdp(self.cdp_url)
+            launched = False
+            for attempt in range(6):
+                try:
+                    self._browser = self._playwright.chromium.connect_over_cdp(self.cdp_url)
+                    break
+                except Exception:
+                    if not launched:
+                        self.launch_real_chrome()
+                        launched = True
+                    delay = 3 + attempt * 3
+                    if attempt < 5:
+                        time.sleep(delay)
+                    else:
+                        raise RuntimeError(
+                            f"无法连接到 Chrome 浏览器（CDP: {self.cdp_url}）。"
+                            f"请确认 Chrome 已启动且远程调试端口已开启。"
+                        ) from None
             existing_contexts = list(self._browser.contexts)
             if existing_contexts:
                 self._context = existing_contexts[0]
@@ -354,12 +365,23 @@ class BrowserOzonClient:
 
             with sync_playwright() as p:
                 if self.cdp_url:
-                    try:
-                        browser = p.chromium.connect_over_cdp(self.cdp_url)
-                    except Exception:
-                        self.launch_real_chrome()
-                        time.sleep(3)
-                        browser = p.chromium.connect_over_cdp(self.cdp_url)
+                    launched = False
+                    for attempt in range(6):
+                        try:
+                            browser = p.chromium.connect_over_cdp(self.cdp_url)
+                            break
+                        except Exception:
+                            if not launched:
+                                self.launch_real_chrome()
+                                launched = True
+                            delay = 3 + attempt * 3
+                            if attempt < 5:
+                                time.sleep(delay)
+                            else:
+                                raise RuntimeError(
+                                    f"无法连接到 Chrome 浏览器（CDP: {self.cdp_url}）。"
+                                    f"请确认 Chrome 已启动且远程调试端口已开启。"
+                                ) from None
 
                     try:
                         context = browser.contexts[0] if browser.contexts else browser.new_context()
@@ -1179,20 +1201,13 @@ class BrowserOzonClient:
         return self._fetch_seller_home_products_dom(page, seller_url, max_scrolls=max_scrolls, deadline=deadline)
 
     def _fetch_seller_home_products_api(self, page: Any, seller_url: str, deadline: float | None = None) -> dict[str, Any]:
-        # Directly navigate to the seller URL to provide visual feedback and satisfy origin requirements
-        if page.url != seller_url:
+        # Must be on an Ozon page for same-origin credentials to work.
+        # Direct navigation to seller page triggers antibot; Ozon main page is sufficient.
+        if not page.url.startswith(OZON_BASE):
             remaining = (deadline - time.time()) * 1000 if deadline else 120000
             if remaining <= 0:
                 raise RuntimeError("Timeout before navigation")
-            page.goto(seller_url, wait_until="domcontentloaded", timeout=min(remaining, 120000))
-            
-            # Verify basic DOM structure - ensures we aren't stuck on an empty or error page
-            try:
-                page.wait_for_selector('div, a, span', timeout=5000)
-            except Exception:
-                raise RuntimeError(f"Page loaded but no basic elements found (empty/error): {seller_url}")
-                
-            # Give it a short wait to let basic DOM/anti-bot settle before hitting the API
+            page.goto(OZON_BASE, wait_until="domcontentloaded", timeout=min(remaining, 30000))
             page.wait_for_timeout(2000)
             
         seller_path = extract_relative_url(seller_url)

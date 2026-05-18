@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time as time_mod
 from pathlib import Path
 from typing import Any, Iterable, Optional
 from threading import Lock
@@ -9,11 +10,16 @@ import pymysql
 from pymysql.cursors import DictCursor
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import QueuePool
+from sqlalchemy.exc import OperationalError
 
 from .config import settings
 
 _DEFAULT_DATABASE = object()
 _IGNORABLE_MIGRATION_ERROR_CODES = {1060, 1061}
+
+_TRANSIENT_ERROR_CODES = {0, 1205, 2003, 2006, 2013}
+_MAX_RETRIES = 3
+_RETRY_DELAY_SECONDS = 0.5
 
 _engine_cache: dict[str, Any] = {}
 _engine_lock = Lock()
@@ -31,19 +37,24 @@ def get_engine(database: Optional[str] = None):
         if db_name:
             url += f"/{db_name}"
             
-        # Defensive configuration as per rules
+        # Defensive configuration for Tailscale/WireGuard VPN:
+        # - pool_recycle=600: recycle before WireGuard rekey (every ~2min) creates stale connections
+        # - pool_pre_ping=True: verify connection liveness before each use
+        # - lock_wait_timeout=10: if a prior dead connection holds row locks, fail fast instead of
+        #   waiting 50s (MySQL default) and cascading timeouts across all workers
         engine = create_engine(
             url,
             poolclass=QueuePool,
             pool_size=10,
             max_overflow=20,
-            pool_recycle=1800,
+            pool_recycle=600,
             pool_pre_ping=True,
             connect_args={
                 "connect_timeout": settings.db_connect_timeout,
                 "read_timeout": settings.db_read_timeout,
                 "write_timeout": settings.db_write_timeout,
                 "charset": "utf8mb4",
+                "init_command": "SET SESSION lock_wait_timeout=10, SESSION innodb_lock_wait_timeout=10",
             }
         )
         _engine_cache[cache_key] = engine
@@ -60,35 +71,75 @@ def _prepare_sql(sql: str) -> str:
     sql = sql.replace("%%", "%")
     return re.sub(r'%\((\w+)\)s', r':\1', sql)
 
+
+def _is_transient_error(exc: Exception) -> bool:
+    if isinstance(exc, OperationalError):
+        orig = getattr(exc, "orig", None)
+        if orig is not None:
+            code = getattr(orig, "args", [None])[0] if hasattr(orig, "args") else None
+            if code in _TRANSIENT_ERROR_CODES:
+                return True
+        return True
+    return False
+
+
+def _retry_on_transient(fn, *args, **kwargs):
+    last_exc = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if _is_transient_error(exc) and attempt < _MAX_RETRIES:
+                time_mod.sleep(_RETRY_DELAY_SECONDS * (attempt + 1))
+                continue
+            raise
+    raise last_exc
+
+
 def execute(sql: str, params: Optional[dict[str, Any]] = None) -> int:
-    engine = get_engine()
-    with engine.begin() as conn:
-        result = conn.execute(text(_prepare_sql(sql)), params or {})
-        return result.rowcount
+    def _do():
+        engine = get_engine()
+        with engine.begin() as conn:
+            result = conn.execute(text(_prepare_sql(sql)), params or {})
+            return result.rowcount
+    return _retry_on_transient(_do)
+
 
 def execute_many(sql: str, params: Iterable[dict[str, Any]]) -> int:
-    engine = get_engine()
-    with engine.begin() as conn:
-        result = conn.execute(text(_prepare_sql(sql)), list(params))
-        return result.rowcount
+    def _do():
+        engine = get_engine()
+        with engine.begin() as conn:
+            result = conn.execute(text(_prepare_sql(sql)), list(params))
+            return result.rowcount
+    return _retry_on_transient(_do)
+
 
 def insert_and_get_id(sql: str, params: Optional[dict[str, Any]] = None) -> int:
-    engine = get_engine()
-    with engine.begin() as conn:
-        result = conn.execute(text(_prepare_sql(sql)), params or {})
-        return result.lastrowid
+    def _do():
+        engine = get_engine()
+        with engine.begin() as conn:
+            result = conn.execute(text(_prepare_sql(sql)), params or {})
+            return result.lastrowid
+    return _retry_on_transient(_do)
+
 
 def fetch_one(sql: str, params: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
-    engine = get_engine()
-    with engine.connect() as conn:
-        result = conn.execute(text(_prepare_sql(sql)), params or {}).mappings().first()
-        return dict(result) if result else None
+    def _do():
+        engine = get_engine()
+        with engine.connect() as conn:
+            result = conn.execute(text(_prepare_sql(sql)), params or {}).mappings().first()
+            return dict(result) if result else None
+    return _retry_on_transient(_do)
+
 
 def fetch_all(sql: str, params: Optional[dict[str, Any]] = None) -> list[dict[dict, Any]]:
-    engine = get_engine()
-    with engine.connect() as conn:
-        result = conn.execute(text(_prepare_sql(sql)), params or {}).mappings().all()
-        return [dict(r) for r in result]
+    def _do():
+        engine = get_engine()
+        with engine.connect() as conn:
+            result = conn.execute(text(_prepare_sql(sql)), params or {}).mappings().all()
+            return [dict(r) for r in result]
+    return _retry_on_transient(_do)
 
 def run_sql_file(path: Path) -> None:
     sql = path.read_text(encoding="utf-8")

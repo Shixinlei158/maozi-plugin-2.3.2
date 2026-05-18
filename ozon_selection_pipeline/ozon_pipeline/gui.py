@@ -79,7 +79,19 @@ class _GuiSummaryLogger:
             "manual action required",
             "error:",
             "Traceback",
+            "  File ",
+            "pymysql",
+            "sqlalchemy",
+            "requests",
+            "playwright",
+            "RuntimeError",
+            "OperationalError",
+            "ConnectionError",
+            "TimeoutError",
+            "ConnectionRefused",
+            "CDP 浏览器已连接",
         )
+        self._in_error_block = False
 
     def _set_next_interval(self):
         # 6-9 minutes random interval
@@ -103,17 +115,28 @@ class _GuiSummaryLogger:
     def _handle_line(self, line: str) -> None:
         stripped = line.strip()
         if not stripped:
+            self._in_error_block = False
             return
         self._update_counters(stripped)
         now = datetime.now()
         if self._should_emit(stripped):
+            self._in_error_block = stripped.startswith(("Traceback", "  File "))
+            self._queue.put(stripped + "\n")
+            return
+        if self._in_error_block:
             self._queue.put(stripped + "\n")
             return
         if now >= self._next_summary_at:
             self.emit_summary(now)
 
     def _should_emit(self, line: str) -> bool:
-        return line.startswith(self._important_prefixes)
+        if line.startswith(self._important_prefixes):
+            return True
+        return any(
+            keyword in line
+            for keyword in ("OperationalError", "InterfaceError", "TimeoutError",
+                           "ConnectionError", "ConnectionRefused", "ECONNREFUSED")
+        )
 
     def _update_counters(self, line: str) -> None:
         if line.startswith("crawl seller:"):
@@ -678,13 +701,33 @@ class App:
             messagebox.showerror("参数错误", str(exc))
             return
 
+        # Pre-flight: verify CDP browser is reachable before starting collection.
+        # Without a logged-in browser, all Ozon/Maozi API calls will fail.
+        from .browser_ozon import BrowserOzonClient
+        cdp_url = settings.chrome_cdp_url or "http://127.0.0.1:9222"
+        preflight = BrowserOzonClient(cdp_url=cdp_url)
+        try:
+            ping = preflight.ping_cdp()
+        except Exception:
+            ping = {"reachable": False}
+        if not ping.get("reachable"):
+            msg = (
+                "未检测到 Chrome 浏览器（CDP 调试端口）。\n\n"
+                f"请先点击「启动浏览器」按钮，等待 Chrome 窗口出现，\n"
+                f"确认已在浏览器中登录 Ozon 和 Maozi 插件后，再点击「开始采集」。\n\n"
+                f"（检测地址: {cdp_url}）"
+            )
+            messagebox.showwarning("浏览器未就绪", msg)
+            return
+
         self._stop_flag.clear()
         self._start_btn.config(state="disabled", bg="#7f8c8d")
         self._stop_btn.config(state="normal", bg="#e74c3c")
         self._clear_log()
         self._logger = _GuiSummaryLogger(self._log_queue)
         self._append_log(f"===== 开始采集 | 模式: {mode} =====\n")
-        self._append_log("GUI日志策略: 仅显示关键事件，并约每5分钟输出一次运行汇总。\n")
+        self._append_log(f"CDP 浏览器已连接: {cdp_url}\n")
+        self._append_log("GUI日志策略: 仅显示关键事件，并约每6-9分钟输出一次运行汇总。\n")
 
         sys.stdout = self._logger
         sys.stderr = self._logger

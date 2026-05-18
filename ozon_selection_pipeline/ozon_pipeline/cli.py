@@ -1519,47 +1519,38 @@ def load_seller_offers(sku: str, browser: BrowserOzonClient) -> list[dict[str, A
 
 
 def load_seller_home_products(seller_url: str, browser: BrowserOzonClient, *, max_scrolls: int = 8) -> dict[str, Any]:
-    try:
-        return OzonFrontendClient().seller_home_products(seller_url)
-    except Exception:
-        return browser.seller_home_products(seller_url, max_scrolls=max_scrolls)
+    # Page-injected fetch from within CDP browser (has auth context) is the only reliable path.
+    # Pure requests (OzonFrontendClient) always returns 403 without browser cookies/fingerprint.
+    return browser.seller_home_products(seller_url, max_scrolls=max_scrolls)
 
 
 def load_product_snapshot(sku: str, browser: BrowserOzonClient) -> dict[str, Any]:
-    try:
-        return OzonFrontendClient().product_snapshot(sku)
-    except Exception:
-        return browser.product_snapshot(sku)
+    return browser.product_snapshot(sku)
 
 
 def load_maozi_sku3(sku: str, maozi: MaoziClient, browser: BrowserOzonClient, *, prefer_direct: bool) -> tuple[dict[str, Any], str]:
+    # SKU3 API requires the extension token from chrome.storage.local, only available inside the CDP browser.
+    # The pure-requests MaoziClient does not carry this token; browser extension page injection is the reliable path.
     try:
-        return maozi.sku3(sku), "direct_api"
-    except Exception as direct_exc:
+        return browser.maozi_sku3(sku), "extension_page"
+    except Exception as browser_exc:
+        raise RuntimeError(
+            f"browser extension sku3 failed: {summarize_exception(browser_exc)}"
+        ) from browser_exc
+
+
+def load_top_list_maozi_sku3(sku: str, maozi: MaoziClient, browser: BrowserOzonClient) -> tuple[dict[str, Any], str]:
+    # SKU3 requires extension token from chrome.storage.local; only CDP browser page injection works.
+    try:
+        return browser.top_list_sku3(sku), "top_list_batch"
+    except Exception as site_exc:
         try:
             return browser.maozi_sku3(sku), "extension_page"
         except Exception as browser_exc:
             raise RuntimeError(
-                f"direct api failed: {summarize_exception(direct_exc)}; "
+                f"top-list batch failed: {summarize_exception(site_exc)}; "
                 f"browser extension failed: {summarize_exception(browser_exc)}"
             ) from browser_exc
-
-
-def load_top_list_maozi_sku3(sku: str, maozi: MaoziClient, browser: BrowserOzonClient) -> tuple[dict[str, Any], str]:
-    try:
-        return maozi.sku3(sku), "direct_api"
-    except Exception as direct_exc:
-        try:
-            return browser.top_list_sku3(sku), "top_list_page"
-        except Exception as site_exc:
-            try:
-                return browser.maozi_sku3(sku), "extension_page"
-            except Exception as browser_exc:
-                raise RuntimeError(
-                    f"direct api failed: {summarize_exception(direct_exc)}; "
-                    f"top-list page failed: {summarize_exception(site_exc)}; "
-                    f"browser extension failed: {summarize_exception(browser_exc)}"
-                ) from browser_exc
 
 
 def prefetch_top_list_maozi_batch(
@@ -1584,12 +1575,8 @@ def prefetch_top_list_maozi_batch(
         for retry_idx in range(max_retries + 1):
             start = datetime.now()
             try:
-                if maozi is not None:
-                    raw = maozi.sku3_batch(chunk, concurrency=resolved_concurrency)
-                    source = "direct_api_batch"
-                else:
-                    raw = browser.top_list_sku3_batch(chunk, concurrency=resolved_concurrency)
-                    source = "top_list_batch"
+                raw = browser.top_list_sku3_batch(chunk, concurrency=resolved_concurrency)
+                source = "top_list_batch"
                 elapsed_ms = int((datetime.now() - start).total_seconds() * 1000)
                 vlog(
                     "top-list batch sku3:",
