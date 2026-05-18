@@ -62,6 +62,7 @@ class BrowserOzonClient:
         self._prepared_page_ids: set[int] = set()
         self._fingerprint_config_cache: dict[str, Any] | None = None
         self._detected_chrome_version: str | None = None
+        self._cached_maozi_token: tuple[str, str] | None = None  # (token, source)
 
     def seller_offers(self, sku: str) -> list[dict[str, Any]]:
         return self._run_page_task(self._fetch_seller_offers, sku)
@@ -225,6 +226,7 @@ class BrowserOzonClient:
         self._session_owns_context = True
 
     def close_session(self) -> None:
+        self._cached_maozi_token = None
         try:
             for page in list(self._sticky_pages.values()):
                 try:
@@ -1060,39 +1062,50 @@ class BrowserOzonClient:
 
         raise RuntimeError("; ".join(errors))
 
+    def _get_maozi_token(self, page: Any) -> str | None:
+        """获取并缓存毛子 token。仅在 token 未缓存时导航到 ext popup。"""
+        if self._cached_maozi_token is not None:
+            return self._cached_maozi_token[0]
+
+        target_url = self._extension_popup_url()
+        try:
+            current = page.url or ""
+        except Exception:
+            current = ""
+        if current != target_url:
+            page.goto(target_url, wait_until="load", timeout=15000)
+            page.wait_for_timeout(800)
+
+        result = page.evaluate("""
+            async () => {
+                let token = null;
+                for (let i = 0; i < 8 && !token; i++) {
+                    if (i > 0) await new Promise(r => setTimeout(r, 500));
+                    try {
+                        const s = await chrome.storage.local.get(["maozierp-token"]);
+                        token = s["maozierp-token"];
+                    } catch(e) {}
+                }
+                return token || null;
+            }
+        """)
+        if result:
+            self._cached_maozi_token = (result, "extension_storage")
+        return result
+
     def _fetch_top_list_sku3_batch(
         self,
         page: Any,
         skus: list[str],
         concurrency: int,
     ) -> dict[str, dict[str, Any]]:
-        target_url = self._extension_popup_url()
-        current_url = ""
-        try:
-            current_url = page.url or ""
-        except Exception:
-            current_url = ""
-        if current_url != target_url:
-            page.goto(target_url, wait_until="load", timeout=15000)
-            page.wait_for_timeout(800)
+        token = self._get_maozi_token(page)
+        if not token:
+            return {}
 
         raw = page.evaluate(
             """
-            async ({ skus, concurrency, timeoutMs, pluginVersion }) => {
-              // Try extension chrome.storage token first, with retries
-              let token = null;
-              let tokenSource = "";
-              for (let attempt = 0; attempt < 5 && !token; attempt++) {
-                if (attempt > 0) await new Promise(r => setTimeout(r, 500));
-                try {
-                  const storage = await chrome.storage.local.get(["maozierp-token"]);
-                  token = storage["maozierp-token"];
-                  if (token) tokenSource = "extension_storage";
-                } catch(e) {}
-              }
-              if (!token) {
-                return { _needs_fallback: true, _reason: "maozierp-token missing in chrome.storage.local after 5 retries" };
-              }
+            async ({ skus, concurrency, timeoutMs, pluginVersion, token }) => {
               const items = Array.from(new Set((skus || []).map((sku) => String(sku).trim()).filter(Boolean)));
               const results = {};
               let nextIndex = 0;
@@ -1160,12 +1173,9 @@ class BrowserOzonClient:
                 "concurrency": int(concurrency),
                 "timeoutMs": min(max(settings.request_timeout_seconds * 1000, 5000), 30000),
                 "pluginVersion": settings.maozi_plugin_version,
+                "token": token,
             },
         )
-        if isinstance(raw, dict) and raw.get("_needs_fallback"):
-            # Maozi 网站被 Cloudflare 封禁，不 fallback 到 localStorage 路径
-            # 扩展 popup chrome.storage token 不可用时直接返回空，单 SKU 标记 batch_skipped
-            return {}
         if not isinstance(raw, dict):
             raise RuntimeError("top-list sku3 batch returned invalid payload")
         results: dict[str, dict[str, Any]] = {}
