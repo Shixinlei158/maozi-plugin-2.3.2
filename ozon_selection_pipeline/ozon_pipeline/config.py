@@ -93,6 +93,17 @@ class Settings:
         "true",
         "yes",
     }
+    seller_store_rejected_results: bool = os.getenv("SELLER_STORE_REJECTED_RESULTS", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    seller_seed_skus_from_home: bool = os.getenv("SELLER_SEED_SKUS_FROM_HOME", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    seller_home_sku_batch_size: int = int(os.getenv("SELLER_HOME_SKU_BATCH_SIZE", "1000"))
 
 
 settings = Settings()

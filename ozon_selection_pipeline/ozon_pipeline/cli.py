@@ -404,7 +404,8 @@ def run_seller_network(
         prepare_stage_start = time.perf_counter()
         try:
             prepared_items = bulk_upsert_seller_home_skus(url, selected_items)
-            bulk_upsert_seed_skus([sku for sku, _ in prepared_items], source=f"seller_home:{url}")
+            if not settings.seller_fast_mode or settings.seller_seed_skus_from_home:
+                bulk_upsert_seed_skus([sku for sku, _ in prepared_items], source=f"seller_home:{url}")
             home_rows_saved = len(prepared_items)
             prepare_elapsed = time.perf_counter() - prepare_stage_start
             print(

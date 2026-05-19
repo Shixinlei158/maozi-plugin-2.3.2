@@ -594,17 +594,25 @@ def bulk_upsert_sku_results(
     universe_entries = []
 
     now = datetime.now()
+    is_seller_fast_source = source.startswith("seller_home:") and settings.seller_fast_mode
 
     for item in results:
         sku = item["sku"]
         sku_result = item["sku_result"]
-        if source.startswith("seller_home:") and settings.seller_fast_mode and sku_result.get("transient_failed"):
+        if is_seller_fast_source and sku_result.get("transient_failed"):
             continue
         metric = sku_result.get("metric")
         product_snapshot = sku_result.get("product_snapshot")
         selection_result = sku_result.get("selection_result")
         plugin_card = sku_result.get("plugin_card") or {}
         seller_offer_count = sku_result.get("seller_offer_count")
+
+        if (
+            is_seller_fast_source
+            and not settings.seller_store_rejected_results
+            and not (selection_result and selection_result.matched)
+        ):
+            continue
         
         # 1. 准备指标行
         if metric:
@@ -1669,7 +1677,7 @@ def bulk_upsert_seller_home_skus(seller_home_url: str, items: list[dict[str, Any
           updated_at=CURRENT_TIMESTAMP
         """,
         rows,
-        batch_size=200,
+        batch_size=settings.seller_home_sku_batch_size,
     )
     if settings.seller_fast_mode:
         return [(row["sku"], row["product_data"]["raw"]["seller_home"]) for row in rows]
