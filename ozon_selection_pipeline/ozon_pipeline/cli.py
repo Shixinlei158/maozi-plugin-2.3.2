@@ -47,6 +47,7 @@ from .repository import (
 from .rules import TOP_LIST_SEED_RULE, evaluate_selection_rule, evaluate_top_list_prefilter
 
 _VERBOSE = False
+_OFFER_FETCH_LOCK = Lock()
 
 
 class ManualInterventionRequired(RuntimeError):
@@ -621,9 +622,13 @@ def run_seller_network(
                 seller_qualified += 1
                 qualified_skus += 1
                 offers = sku_result.get("offers") or []
-                seller_offer_rows += len(offers)
-                stored_offer_rows += len(offers)
+                stored_seller_offers = 0
                 for offer in offers:
+                    try:
+                        upsert_seller_offer(sku, offer)
+                        stored_seller_offers += 1
+                    except Exception as exc:
+                        vlog("seller-home offer upsert failed:", f"sku={sku}", f"error={exc}", prefix="seller")
                     home_url = (offer.get("seller_home_url") or "").strip()
                     if not home_url:
                         continue
@@ -632,6 +637,8 @@ def run_seller_network(
                         "name": offer.get("name"),
                         "depth": depth + 1,
                     }
+                seller_offer_rows += stored_seller_offers
+                stored_offer_rows += stored_seller_offers
             else:
                 seller_rejected += 1
                 rejected_skus += 1
@@ -2152,9 +2159,22 @@ def process_sku(
         if not non_offer_reasons:
             if batch_only_mode:
                 if settings.seller_fast_mode:
-                    vlog("sku batch-only fast mode skipped offers fallback:", f"sku={sku}", prefix="sku")
-                    preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
-                    non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
+                    if settings.seller_fast_fetch_candidate_offers:
+                        try:
+                            with _OFFER_FETCH_LOCK:
+                                offers = load_seller_offers(sku, browser)
+                            seller_offer_count = len(offers)
+                            preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
+                            non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
+                            vlog("sku batch-only fast candidate offers fetched:", f"sku={sku}", f"offers={seller_offer_count}", prefix="sku")
+                        except Exception as exc:
+                            offers = None
+                            offer_fetch_error = exc
+                            vlog("sku batch-only fast candidate offers fetch failed:", f"sku={sku}", exc, prefix="sku")
+                    else:
+                        vlog("sku batch-only fast mode skipped offers fallback:", f"sku={sku}", prefix="sku")
+                        preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
+                        non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
                 else:
                     # Batch mode: skip expensive load_seller_offers but try plugin_card as lightweight fallback
                     vlog("sku batch-only trying plugin fallback for offers:", f"sku={sku}", prefix="sku")
@@ -2241,6 +2261,7 @@ def process_sku(
             "plugin_card": plugin_card,
             "transient_failed": defer_pending_refresh or batch_missing_offer_count,
             "metric_raw": response,
+            "offers": offers or [],
         }
 
     try:

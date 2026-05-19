@@ -103,6 +103,11 @@ class Settings:
         "true",
         "yes",
     }
+    seller_fast_fetch_candidate_offers: bool = os.getenv("SELLER_FAST_FETCH_CANDIDATE_OFFERS", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     seller_home_sku_batch_size: int = int(os.getenv("SELLER_HOME_SKU_BATCH_SIZE", "1000"))
 
 
