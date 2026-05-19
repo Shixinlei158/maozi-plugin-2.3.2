@@ -1617,7 +1617,7 @@ def prepare_seller_home_sku_rows(seller_home_url: str, items: list[dict[str, Any
         price_amount = to_decimal(item.get("price_amount"))
         currency = item.get("currency")
         main_image_url = item.get("image_url") or item.get("main_image_url")
-        raw_json = json_dumps(item)
+        raw_json = None if settings.seller_fast_mode else json_dumps(item)
         rows.append(
             {
                 "seller_key": key,
@@ -1663,12 +1663,14 @@ def bulk_upsert_seller_home_skus(seller_home_url: str, items: list[dict[str, Any
           price_amount=COALESCE(VALUES(price_amount), price_amount),
           currency=COALESCE(VALUES(currency), currency),
           main_image_url=COALESCE(VALUES(main_image_url), main_image_url),
-          raw_json=VALUES(raw_json),
+          raw_json=COALESCE(VALUES(raw_json), raw_json),
           updated_at=CURRENT_TIMESTAMP
         """,
         rows,
         batch_size=200,
     )
+    if settings.seller_fast_mode:
+        return [(row["sku"], row["product_data"]["raw"]["seller_home"]) for row in rows]
     db.execute_insert_many(
         """
         INSERT INTO sku_discovery_sources
