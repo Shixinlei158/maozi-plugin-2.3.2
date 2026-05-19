@@ -304,12 +304,12 @@ class App:
         self._notebook.add(tab_adv, text="模式专属配置")
 
         # Tab 1: 核心调度
-        self._add_param(tab_core, 0, 0, "每轮处理上限 (process_limit)", "process_limit", "100", "int", min_val=1, max_val=10000, 
-                       tooltip="每轮任务最多处理的SKU或卖家数量。示例：100")
-        self._add_param(tab_core, 0, 1, "最大爬取深度 (max_depth)", "max_depth", "-1", "int", min_val=-1, max_val=100, 
-                       tooltip="-1表示无限递归；0表示仅处理当前列表；1表示处理跟卖卖家。示例：1")
+        self._add_param(tab_core, 0, 0, "每轮处理上限 (process_limit)", "process_limit", "1", "int", min_val=1, max_val=10000,
+                       tooltip="每轮任务最多处理的SKU或卖家数量。生产长跑建议：1")
+        self._add_param(tab_core, 0, 1, "最大爬取深度 (max_depth)", "max_depth", "0", "int", min_val=-1, max_val=100,
+                       tooltip="0表示按数据库卖家池逐轮循环；跟卖卖家会入库后由后续轮次继续采集。生产长跑建议：0")
         self._add_param(tab_core, 1, 0, "最大卖家数 (max_sellers)", "max_sellers", "0", "int", min_val=0, max_val=100000, 
-                       tooltip="本次运行累计最多访问的卖家数量。0表示不限制。示例：50")
+                       tooltip="本轮最多访问的卖家数量。0表示不限制；生产长跑建议：0")
         self._add_param(tab_core, 1, 1, "单店SKU上限 (sku_limit)", "sku_limit", "0", "int", min_val=0, max_val=100000, 
                        tooltip="从每个卖家主页提取的SKU最大数量。0表示全部提取。示例：200")
         self._add_param(tab_core, 2, 0, "卖家页最大滚动 (max_scrolls)", "max_scrolls", "8", "int", min_val=0, max_val=50,
@@ -537,8 +537,8 @@ class App:
             return
             
         defaults = {
-            "process_limit": "100",
-            "max_depth": "-1",
+            "process_limit": "1",
+            "max_depth": "0",
             "max_sellers": "0",
             "sku_limit": "0",
             "max_scrolls": "8",
@@ -835,12 +835,8 @@ class App:
 
     def _stop_collection(self):
         self._stop_flag.set()
-        self._append_log("\n===== 正在停止采集... =====\n")
-        self._start_btn.config(state="normal", bg="#27ae60")
+        self._append_log("\n===== 正在停止采集，将在当前卖家结束后退出... =====\n")
         self._stop_btn.config(state="disabled", bg="#7f8c8d")
-
-        sys.stdout = self._old_stdout
-        sys.stderr = self._old_stderr
 
     def _run_collection(self, mode: str, user_params: dict[str, Any]):
         try:
@@ -863,6 +859,7 @@ class App:
                 "cdp_url": settings.chrome_cdp_url or None,
                 "remote_debugging_port": settings.chrome_remote_debugging_port,
                 "headless": settings.chrome_headless,
+                "stop_event": self._stop_flag,
             }
             full_params.update(user_params)
             

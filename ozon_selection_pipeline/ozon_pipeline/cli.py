@@ -291,6 +291,7 @@ def run_seller_network(
     sku_limit: int,
     max_scrolls: int,
     seller_sku_workers: int,
+    stop_event: Any | None = None,
 ) -> dict[str, int]:
     max_sellers = max_sellers if max_sellers > 0 else 1000000
     unlimited_depth = max_depth < 0
@@ -322,6 +323,9 @@ def run_seller_network(
     )
 
     while queue and processed_sellers < max_sellers:
+        if stop_event is not None and stop_event.is_set():
+            print("seller network stop requested: exiting before next seller")
+            break
         seller = queue.popleft()
         url = seller["url"]
         depth = int(seller["depth"])
@@ -1316,8 +1320,12 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
     round_no = 0
     consecutive_empty_rounds = 0
     MAX_EMPTY_ROUNDS = 3
+    stop_event = getattr(args, "stop_event", None)
 
     while True:
+        if stop_event is not None and stop_event.is_set():
+            print("expand-network stop requested: exiting before next round")
+            break
         due_sellers = list_due_seller_shops(process_limit=args.process_limit)
         vlog(
             "seller backlog preview:",
@@ -1368,6 +1376,7 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
                     sku_limit=args.sku_limit,
                     max_scrolls=args.max_scrolls,
                     seller_sku_workers=args.seller_sku_workers,
+                    stop_event=stop_event,
                 )
         except ManualInterventionRequired as exc:
             log_line("manual action required:", exc, prefix="manual")
