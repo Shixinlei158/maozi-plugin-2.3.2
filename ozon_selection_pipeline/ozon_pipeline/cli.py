@@ -495,7 +495,6 @@ def run_seller_network(
                     f"error={summarize_exception(exc)}",
                 )
 
-        # 无 CDP 或 batch 明确失败且无任何数据时才跳过卖家
         if not browser.cdp_url:
             print(
                 "skip seller:",
@@ -509,15 +508,10 @@ def run_seller_network(
             continue
         if seller_batch_prefetch_failed and not seller_prefetched_maozi:
             print(
-                "skip seller:",
-                url,
-                "| reason= batch sku3 request failed",
-                "| requested=",
-                len(prepared_items),
+                "WARN: seller batch SKU3 prefetch failed, falling back to individual SKU processing:",
+                f"seller={url}",
+                f"| requested={len(prepared_items)}",
             )
-            mark_seller_collected(key)
-            processed_sellers += 1
-            continue
 
         if not prepared_items:
             vlog("seller-home no items found/saved, skipping completion", f"seller={url}", prefix="seller")
@@ -537,18 +531,17 @@ def run_seller_network(
                 "raw": {"seller_home": item},
             }
             if prefetched is None:
-                return {
-                    "sku": sku,
-                    "sku_result": {
-                        "qualified": False,
-                        "batch_skipped": True,
-                        "rule_reason": "卖家页批量 sku3 未返回，已跳过单 SKU 补抓",
-                        "seller_offer_count": None,
-                        "offers": [],
-                        "maozi_source": "seller_batch_miss",
-                        "product_snapshot": product_snapshot_override,
-                    },
-                }
+                # 批量预取未覆盖此 SKU，降级为逐 SKU 单独请求(仍保持 batch_only 以限制浏览器调用)
+                sku_result = process_sku(
+                    sku,
+                    maozi,
+                    browser,
+                    source=f"seller_home:{url}",
+                    product_snapshot_override=product_snapshot_override,
+                    batch_only_mode=True,
+                    skip_db=True,
+                )
+                return {"sku": sku, "sku_result": sku_result}
             sku_result = process_sku(
                 sku,
                 maozi,
@@ -633,6 +626,11 @@ def run_seller_network(
         # 卖家所有 SKU 处理完后，统一执行批量写库
         if seller_results:
             db_write_start = time.perf_counter()
+            print(
+                "phase: bulk write start:",
+                f"seller={url}",
+                f"rows={len(seller_results)}",
+            )
             bulk_upsert_sku_results(seller_results, source=f"seller_home:{url}")
             db_write_elapsed = time.perf_counter() - db_write_start
             print(
@@ -1274,6 +1272,8 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
     total_deferred = 0
     total_offers = 0
     round_no = 0
+    consecutive_empty_rounds = 0
+    MAX_EMPTY_ROUNDS = 3
 
     while True:
         due_sellers = list_due_seller_shops(process_limit=args.process_limit)
@@ -1290,6 +1290,19 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
         if not due_sellers:
             print("expand-network complete: no more due seller pages to process")
             break
+
+        # Cloudflare / safety challenge detection before each round
+        try:
+            challenge = browser.detect_challenge()
+            if challenge.get("has_challenge"):
+                print(
+                    "⚠️⚠️⚠️ CLOUDFLARE CHALLENGE DETECTED ⚠️⚠️⚠️",
+                    f"| affected pages={challenge.get('pages')}",
+                )
+                print(">>> MANUAL ACTION REQUIRED: Complete the Cloudflare verification in your browser window.")
+        except Exception:
+            pass
+
         queue = deque(
             {
                 "url": str(item.get("home_url") or "").strip(),
@@ -1354,8 +1367,15 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
         )
 
         if stats.get("queued_sellers", 0) == 0 and stats.get("processed_sellers", 0) == 0:
-            print("expand-network: no new sellers discovered in this round, stopping")
-            break
+            consecutive_empty_rounds += 1
+            print(
+                f"expand-network: no progress in this round, consecutive empty rounds={consecutive_empty_rounds}/{MAX_EMPTY_ROUNDS}"
+            )
+            if consecutive_empty_rounds >= MAX_EMPTY_ROUNDS:
+                print("expand-network: too many consecutive empty rounds, stopping")
+                break
+            continue
+        consecutive_empty_rounds = 0
 
     print(
         "expand-network final summary:",
@@ -1968,6 +1988,31 @@ def process_sku(
         try:
             response, maozi_source = load_maozi_sku3(sku, maozi, browser, prefer_direct=True)
         except Exception as exc:
+            if batch_only_mode:
+                reason = f"待重试: 毛子 sku3 获取失败: {summarize_exception(exc)}"
+                vlog("sku maozi fetch failed in batch mode:", f"sku={sku}", f"error={reason}", prefix="sku")
+                return {
+                    "sku": sku,
+                    "qualified": False,
+                    "strict_qualified": False,
+                    "transient_failed": True,
+                    "rule_reason": reason,
+                    "status_update_sales": None,
+                    "status_update_variant": None,
+                    "seller_offer_count": None,
+                    "maozi_source": "fetch_failed",
+                    "metric": None,
+                    "product_snapshot": product_snapshot_override or {},
+                    "selection_result": None,
+                    "plugin_card": {
+                        "metric_overrides": {},
+                        "seller_offer_count": None,
+                        "line_map": None,
+                        "card_lines": None,
+                    },
+                    "metric_raw": None,
+                    "offers": [],
+                }
             raise RuntimeError(
                 f"failed to fetch maozi sku3 for sku {sku}; {summarize_exception(exc)}"
             ) from exc
@@ -2051,9 +2096,23 @@ def process_sku(
     if seller_offer_count is None:
         if not non_offer_reasons:
             if batch_only_mode:
-                # In batch mode, don't make browser calls per SKU for offers.
-                # The SKU3 data alone is sufficient for initial qualification.
-                vlog("sku batch-only skipped offers:", f"sku={sku}", prefix="sku")
+                # Batch mode: skip expensive load_seller_offers but try plugin_card as lightweight fallback
+                vlog("sku batch-only trying plugin fallback for offers:", f"sku={sku}", prefix="sku")
+                try:
+                    fallback_card = browser.plugin_card_snapshot(sku)
+                    for key, value in (fallback_card.get("metric_overrides") or {}).items():
+                        if value is not None and value != "":
+                            metric_preview[key] = value
+                    fallback_count = fallback_card.get("seller_offer_count")
+                    if fallback_count is not None:
+                        seller_offer_count = fallback_count
+                        preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
+                        non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
+                        vlog("sku batch-only plugin fallback success:", f"sku={sku}", f"seller_offer_count={seller_offer_count}", prefix="sku")
+                    else:
+                        vlog("sku batch-only plugin fallback no offer count:", f"sku={sku}", prefix="sku")
+                except Exception as exc:
+                    vlog("sku batch-only plugin fallback failed:", f"sku={sku}", f"error={exc}", prefix="sku")
             else:
                 try:
                     offers = load_seller_offers(sku, browser)

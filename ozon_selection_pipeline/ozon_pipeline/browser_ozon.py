@@ -179,6 +179,30 @@ class BrowserOzonClient:
                 "pages": pages,
             }
 
+    def detect_challenge(self) -> dict[str, Any]:
+        """扫描所有打开的页面, 检测是否出现 Cloudflare/安全验证页面。"""
+        challenges: list[dict[str, Any]] = []
+        if not self.cdp_url or self._context is None:
+            return {"has_challenge": False, "pages": []}
+        try:
+            pages = list(self._context.pages)
+            for page in pages:
+                try:
+                    if page.is_closed():
+                        continue
+                    url = page.url or ""
+                    title = page.title() or ""
+                    body = page.evaluate("() => (document.body?.innerText || '').slice(0, 500)")
+                except Exception:
+                    continue
+                combined = f"{title} {body}".lower()
+                markers = ("cloudflare", "安全验证", "manual verification", "challenge")
+                if any(m in combined for m in markers):
+                    challenges.append({"url": url, "title": title})
+            return {"has_challenge": len(challenges) > 0, "pages": challenges}
+        except Exception:
+            return {"has_challenge": False, "pages": [], "error": True}
+
     @contextmanager
     def session(self):
         self.open_session()
@@ -1176,13 +1200,13 @@ class BrowserOzonClient:
         return card
 
     def _fetch_seller_home_products(self, page: Any, seller_url: str, max_scrolls: int = 8) -> dict[str, Any]:
-        # Implementation of 3-minute global timeout for single seller page
-        deadline = time.time() + 180  # 3 minutes
+        # Implementation of configurable global timeout for single seller page
+        deadline = time.time() + settings.seller_page_timeout_seconds
         try:
             return self._fetch_seller_home_products_api(page, seller_url, deadline=deadline)
         except Exception as exc:
             if time.time() > deadline:
-                raise RuntimeError(f"Seller page processing timed out (3min limit): {seller_url}") from exc
+                raise RuntimeError(f"Seller page processing timed out ({settings.seller_page_timeout_seconds}s limit): {seller_url}") from exc
             # Fallback to DOM scroll if API failed but time remains
             pass
         return self._fetch_seller_home_products_dom(page, seller_url, max_scrolls=max_scrolls, deadline=deadline)

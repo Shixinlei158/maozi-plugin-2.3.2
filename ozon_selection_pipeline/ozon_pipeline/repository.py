@@ -680,7 +680,7 @@ def bulk_upsert_sku_results(
         """
         db.execute_insert_many(sql, product_rows, batch_size=200)
 
-    if seed_status_rows:
+    if seed_status_rows and not source.startswith("seller_home:"):
         db.execute_many(
             """
             UPDATE seed_pool_skus 
