@@ -598,6 +598,8 @@ def bulk_upsert_sku_results(
     for item in results:
         sku = item["sku"]
         sku_result = item["sku_result"]
+        if source.startswith("seller_home:") and settings.seller_fast_mode and sku_result.get("transient_failed"):
+            continue
         metric = sku_result.get("metric")
         product_snapshot = sku_result.get("product_snapshot")
         selection_result = sku_result.get("selection_result")
