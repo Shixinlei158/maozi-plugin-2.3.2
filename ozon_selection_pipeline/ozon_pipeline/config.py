@@ -79,12 +79,20 @@ class Settings:
     top_list_sku3_batch_size: int = int(os.getenv("TOP_LIST_SKU3_BATCH_SIZE", "60"))
     top_list_sku3_batch_concurrency: int = int(os.getenv("TOP_LIST_SKU3_BATCH_CONCURRENCY", "16"))
     top_list_sku3_batch_chunk_delay_ms: int = int(os.getenv("TOP_LIST_SKU3_BATCH_CHUNK_DELAY_MS", "100"))
+    top_list_sku3_batch_min_success_rate: float = float(os.getenv("TOP_LIST_SKU3_BATCH_MIN_SUCCESS_RATE", "0.05"))
+    top_list_sku3_batch_low_yield_limit: int = int(os.getenv("TOP_LIST_SKU3_BATCH_LOW_YIELD_LIMIT", "1"))
 
     seed_pool_query_limit: int = int(os.getenv("SEED_POOL_QUERY_LIMIT", "500"))
     seed_sku_workers: int = int(os.getenv("SEED_SKU_WORKERS", "4"))
     seller_sku_workers: int = int(os.getenv("SELLER_SKU_WORKERS", "6"))
     chrome_page_prune_threshold: int = int(os.getenv("CHROME_PAGE_PRUNE_THRESHOLD", "12"))
     seller_page_timeout_seconds: int = int(os.getenv("SELLER_PAGE_TIMEOUT_SECONDS", "300"))
+    seller_fast_mode: bool = os.getenv("SELLER_FAST_MODE", "true").lower() in {"1", "true", "yes"}
+    seller_store_deferred_universe: bool = os.getenv("SELLER_STORE_DEFERRED_UNIVERSE", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 
 settings = Settings()

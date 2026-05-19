@@ -649,7 +649,12 @@ def bulk_upsert_sku_results(
         })
 
         # 4. 准备 universe 更新
-        if product_snapshot or metric:
+        store_universe_entry = (
+            bool(metric)
+            or not source.startswith("seller_home:")
+            or settings.seller_store_deferred_universe
+        )
+        if store_universe_entry and (product_snapshot or metric):
             universe_entries.append({
                 "sku": sku,
                 "product_data": product_snapshot,

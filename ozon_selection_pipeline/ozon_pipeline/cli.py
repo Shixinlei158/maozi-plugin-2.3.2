@@ -519,6 +519,31 @@ def run_seller_network(
             processed_sellers += 1
             continue
 
+        def deferred_seller_sku_result(sku: str, product_snapshot: dict[str, Any], reason: str) -> dict[str, Any]:
+            return {
+                "sku": sku,
+                "qualified": False,
+                "strict_qualified": False,
+                "transient_failed": True,
+                "batch_skipped": False,
+                "rule_reason": reason,
+                "status_update_sales": None,
+                "status_update_variant": None,
+                "seller_offer_count": None,
+                "maozi_source": "seller_fast_deferred",
+                "metric": None,
+                "product_snapshot": product_snapshot,
+                "selection_result": None,
+                "plugin_card": {
+                    "metric_overrides": {},
+                    "seller_offer_count": None,
+                    "line_map": None,
+                    "card_lines": None,
+                },
+                "metric_raw": None,
+                "offers": [],
+            }
+
         def process_seller_home_item(entry: tuple[str, dict[str, Any]]) -> dict[str, Any] | None:
             sku, item = entry
             prefetched = seller_prefetched_maozi.get(sku)
@@ -531,6 +556,15 @@ def run_seller_network(
                 "raw": {"seller_home": item},
             }
             if prefetched is None:
+                if settings.seller_fast_mode:
+                    return {
+                        "sku": sku,
+                        "sku_result": deferred_seller_sku_result(
+                            sku,
+                            product_snapshot_override,
+                            "待重试: 效率优先模式下 SKU3 批量未命中，跳过单 SKU 补抓",
+                        ),
+                    }
                 # 批量预取未覆盖此 SKU，降级为逐 SKU 单独请求(仍保持 batch_only 以限制浏览器调用)
                 sku_result = process_sku(
                     sku,
@@ -1650,6 +1684,7 @@ def prefetch_top_list_maozi_batch(
     resolved_batch_size = max(1, int(batch_size or settings.top_list_sku3_batch_size))
     resolved_concurrency = max(1, int(concurrency or settings.top_list_sku3_batch_concurrency))
     prefetched: dict[str, tuple[dict[str, Any], str]] = {}
+    low_yield_streak = 0
     for index in range(0, len(skus), resolved_batch_size):
         chunk = skus[index : index + resolved_batch_size]
         
@@ -1673,6 +1708,11 @@ def prefetch_top_list_maozi_batch(
                     f"retry_used={retry_idx}",
                     prefix="top-list",
                 )
+                success_rate = (len(raw) / len(chunk)) if chunk else 0.0
+                if success_rate < settings.top_list_sku3_batch_min_success_rate:
+                    low_yield_streak += 1
+                else:
+                    low_yield_streak = 0
                 break
             except Exception as exc:
                 elapsed_ms = int((datetime.now() - start).total_seconds() * 1000)
@@ -1710,6 +1750,20 @@ def prefetch_top_list_maozi_batch(
 
         for chunk_sku, response in raw.items():
             prefetched[str(chunk_sku)] = (response, source)
+
+        if (
+            settings.top_list_sku3_batch_low_yield_limit > 0
+            and low_yield_streak >= settings.top_list_sku3_batch_low_yield_limit
+        ):
+            remaining = max(0, len(skus) - (index + len(chunk)))
+            print(
+                "prefetch SKU3 circuit-break:",
+                f"chunk_start={index}",
+                f"succeeded={len(raw)}",
+                f"chunk_size={len(chunk)}",
+                f"remaining_deferred={remaining}",
+            )
+            break
         
         next_chunk_start = index + resolved_batch_size
         if next_chunk_start < len(skus) and settings.top_list_sku3_batch_chunk_delay_ms > 0:
@@ -2096,23 +2150,28 @@ def process_sku(
     if seller_offer_count is None:
         if not non_offer_reasons:
             if batch_only_mode:
-                # Batch mode: skip expensive load_seller_offers but try plugin_card as lightweight fallback
-                vlog("sku batch-only trying plugin fallback for offers:", f"sku={sku}", prefix="sku")
-                try:
-                    fallback_card = browser.plugin_card_snapshot(sku)
-                    for key, value in (fallback_card.get("metric_overrides") or {}).items():
-                        if value is not None and value != "":
-                            metric_preview[key] = value
-                    fallback_count = fallback_card.get("seller_offer_count")
-                    if fallback_count is not None:
-                        seller_offer_count = fallback_count
-                        preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
-                        non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
-                        vlog("sku batch-only plugin fallback success:", f"sku={sku}", f"seller_offer_count={seller_offer_count}", prefix="sku")
-                    else:
-                        vlog("sku batch-only plugin fallback no offer count:", f"sku={sku}", prefix="sku")
-                except Exception as exc:
-                    vlog("sku batch-only plugin fallback failed:", f"sku={sku}", f"error={exc}", prefix="sku")
+                if settings.seller_fast_mode:
+                    vlog("sku batch-only fast mode skipped offers fallback:", f"sku={sku}", prefix="sku")
+                    preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
+                    non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
+                else:
+                    # Batch mode: skip expensive load_seller_offers but try plugin_card as lightweight fallback
+                    vlog("sku batch-only trying plugin fallback for offers:", f"sku={sku}", prefix="sku")
+                    try:
+                        fallback_card = browser.plugin_card_snapshot(sku)
+                        for key, value in (fallback_card.get("metric_overrides") or {}).items():
+                            if value is not None and value != "":
+                                metric_preview[key] = value
+                        fallback_count = fallback_card.get("seller_offer_count")
+                        if fallback_count is not None:
+                            seller_offer_count = fallback_count
+                            preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
+                            non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
+                            vlog("sku batch-only plugin fallback success:", f"sku={sku}", f"seller_offer_count={seller_offer_count}", prefix="sku")
+                        else:
+                            vlog("sku batch-only plugin fallback no offer count:", f"sku={sku}", prefix="sku")
+                    except Exception as exc:
+                        vlog("sku batch-only plugin fallback failed:", f"sku={sku}", f"error={exc}", prefix="sku")
             else:
                 try:
                     offers = load_seller_offers(sku, browser)
@@ -2160,11 +2219,17 @@ def process_sku(
         prefix="sku",
     )
 
+    batch_missing_offer_count = batch_only_mode and seller_offer_count is None and not non_offer_reasons
+
     if skip_db:
         return {
             "sku": sku,
-            "qualified": preview_rule.matched and not defer_pending_refresh,
-            "rule_reason": preview_rule.summary,
+            "qualified": preview_rule.matched and not defer_pending_refresh and not batch_missing_offer_count,
+            "rule_reason": (
+                "待重试: 效率优先模式下跳过跟卖人数补抓"
+                if batch_missing_offer_count
+                else preview_rule.summary
+            ),
             "status_update_sales": metric_preview.get("status_update_sales"),
             "status_update_variant": metric_preview.get("status_update_variant"),
             "seller_offer_count": seller_offer_count,
@@ -2173,7 +2238,7 @@ def process_sku(
             "product_snapshot": product_snapshot,
             "selection_result": preview_rule,
             "plugin_card": plugin_card,
-            "transient_failed": defer_pending_refresh,
+            "transient_failed": defer_pending_refresh or batch_missing_offer_count,
             "metric_raw": response,
         }
 
