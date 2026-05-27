@@ -308,6 +308,8 @@ class BrowserOzonClient:
             launch_url = "about:blank"
         if self.proxy_server:
             args.append(f"--proxy-server={self.proxy_server}")
+        else:
+            args.append("--no-proxy-server")
         if self.extension_dir.exists():
             args.extend(
                 [
@@ -361,6 +363,8 @@ class BrowserOzonClient:
             kwargs["channel"] = self.channel
         if self.proxy_server:
             kwargs["proxy"] = {"server": self.proxy_server}
+        else:
+            args.append("--no-proxy-server")
         context = playwright.chromium.launch_persistent_context(
             str(self.profile_dir),
             **kwargs,
