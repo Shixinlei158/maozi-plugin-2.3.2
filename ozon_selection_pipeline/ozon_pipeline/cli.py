@@ -447,7 +447,7 @@ def run_seller_network(
                     print("DEBUG: seed_sku upsert failed:", seed_exc)
                 prepared_items.append((sku, item))
                 home_rows_saved += 1
-                if home_rows_saved % 50 == 0:
+                if home_rows_saved % 100 == 0:
                     print(
                         "  upsert progress:",
                         f"done={home_rows_saved}/{len(selected_items)}",
@@ -608,7 +608,7 @@ def run_seller_network(
             sku_result = item_result["sku_result"]
             seller_skus += 1
             total_skus += 1
-            if seller_skus % 50 == 0:
+            if seller_skus % 100 == 0:
                 print(
                     "  progress:",
                     f"sku={sku}",

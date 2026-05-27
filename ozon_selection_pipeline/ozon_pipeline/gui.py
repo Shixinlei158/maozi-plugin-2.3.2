@@ -724,6 +724,8 @@ class App:
                 break
         self.root.after(200, self._start_log_poller)
 
+    _MAX_LOG_LINES = 5000
+
     def _append_log(self, text: str):
         try:
             self._log_area.configure(state="normal")
@@ -738,6 +740,10 @@ class App:
                     self._log_area.insert("end", segment, tag)
                 else:
                     self._log_area.insert("end", segment)
+            # 超过上限时截断前面的日志
+            line_count = int(self._log_area.index("end-1c").split(".")[0])
+            if line_count > self._MAX_LOG_LINES:
+                self._log_area.delete("1.0", f"{line_count - self._MAX_LOG_LINES}.0")
             self._log_area.see("end")
             self._log_area.configure(state="disabled")
         except Exception:
