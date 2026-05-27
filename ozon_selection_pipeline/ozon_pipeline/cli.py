@@ -1730,10 +1730,18 @@ def prefetch_top_list_maozi_batch(
                     low_yield_streak += 1
                 else:
                     low_yield_streak = 0
+                batch_no = index // resolved_batch_size + 1
+                total_batches = (len(skus) + resolved_batch_size - 1) // resolved_batch_size
+                miss = len(chunk) - len(raw)
+                if miss > 0:
+                    print(f"  [sku3] 批{batch_no}/{total_batches}: {len(raw)}/{len(chunk)} miss={miss} ({elapsed_ms}ms)")
                 break
             except Exception as exc:
                 elapsed_ms = int((datetime.now() - start).total_seconds() * 1000)
+                batch_no = index // resolved_batch_size + 1
+                total_batches = (len(skus) + resolved_batch_size - 1) // resolved_batch_size
                 if retry_idx < max_retries:
+                    print(f"  [sku3] 批{batch_no}/{total_batches}: 重试{retry_idx+1}/{max_retries} ({elapsed_ms}ms) err={summarize_exception(exc)[:80]}")
                     vlog(
                         "top-list batch sku3 retryable error:",
                         f"chunk_start={index}",
@@ -1756,6 +1764,7 @@ def prefetch_top_list_maozi_batch(
                         raw = browser.top_list_sku3_batch(chunk, concurrency=resolved_concurrency)
                         source = "top_list_batch"
                     else:
+                        print(f"  [sku3] 批{batch_no}/{total_batches}: 永久失败 ({elapsed_ms}ms) err={summarize_exception(exc)[:80]}")
                         vlog(
                             "top-list batch sku3 failed permanently:",
                             f"chunk_start={index}",

@@ -1165,18 +1165,46 @@ class BrowserOzonClient:
         )
 
         if not isinstance(raw, dict) or "results" not in raw:
+            print(f"[sku3-batch] JS返回异常: {str(raw)[:200]}")
             return {}
         results: dict[str, dict[str, Any]] = {}
         auth_failures = 0
+        error_stats: dict[str, int] = {}
+        fail_samples: list[str] = []
         for sku in skus:
             payload = (raw["results"] or {}).get(str(sku))
             if not isinstance(payload, dict):
+                error_stats["MISSING"] = error_stats.get("MISSING", 0) + 1
+                if len(fail_samples) < 3:
+                    fail_samples.append(f"{sku}(MISSING)")
                 continue
             status = payload.get("status", 0)
             if status in (401, 403):
                 auth_failures += 1
             if payload.get("ok") and isinstance(payload.get("data"), dict):
                 results[str(sku)] = payload["data"]
+            else:
+                err = payload.get("error", "")
+                if "abort" in err.lower():
+                    key = "TIMEOUT"
+                elif "failed to fetch" in err.lower():
+                    key = "FETCH_ERROR"
+                elif status > 0:
+                    key = f"HTTP_{status}"
+                else:
+                    key = "OTHER"
+                error_stats[key] = error_stats.get(key, 0) + 1
+                if len(fail_samples) < 3:
+                    fail_samples.append(f"{sku}(status={status},err={err[:40]})")
+
+        # 详细日志
+        ok_count = len(results)
+        fail_count = len(skus) - ok_count
+        js_elapsed = raw.get("elapsedMs", 0)
+        if fail_count > 0:
+            print(f"[sku3-batch] ok={ok_count}/{len(skus)} fail={fail_count} workers={concurrency} js={js_elapsed}ms errors={json.dumps(error_stats)}")
+            for s in fail_samples:
+                print(f"  样本: {s}")
 
         # token 过期：清缓存，下次自动重取
         if not results and auth_failures > 0 and self._cached_maozi_token is not None:
