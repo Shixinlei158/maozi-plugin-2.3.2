@@ -452,12 +452,6 @@ class App:
                 self._log_queue.put("未找到1688 iframe\n")
                 return
 
-            # 保存实例变量供wrapper使用
-            self._current_page = page
-            self._current_iframe = iframe
-            self._current_captured = captured
-            self._current_prev_count = 0
-
             # 全局响应监听
             captured = []
             def on_response(response):
@@ -467,6 +461,12 @@ class App:
                     except Exception:
                         pass
             context.on("response", on_response)
+
+            # 保存实例变量供wrapper使用
+            self._current_page = page
+            self._current_iframe = iframe
+            self._current_captured = captured
+            self._current_prev_count = 0
 
             success_count = 0
             fail_count = 0
