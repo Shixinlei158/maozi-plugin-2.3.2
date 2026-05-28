@@ -809,21 +809,25 @@ class BrowserOzonClient:
         # Prefer reusing a disposable tab so we do not disturb the user's live Ozon pages.
         for page in pages:
             if page.url.startswith(("about:blank", "chrome-error://")):
-                return page, False
+                if not self._page_marker(page).startswith(AUTOMATION_PAGE_NAME_PREFIX):
+                    return page, False
 
         if handler_name in {"_fetch_top_list_page", "_fetch_maozi_sku3"}:
             for page in pages:
                 if page.url.startswith(MAOZI_SELECTION_ORIGIN):
-                    return page, False
+                    if not self._page_marker(page).startswith(AUTOMATION_PAGE_NAME_PREFIX):
+                        return page, False
 
         if handler_name in {"_fetch_seller_offers", "_fetch_seller_home_products", "_fetch_seller_home_products_api"}:
             for page in pages:
                 if page.url.startswith(OZON_BASE):
-                    return page, False
+                    if not self._page_marker(page).startswith(AUTOMATION_PAGE_NAME_PREFIX):
+                        return page, False
 
         for page in pages:
             if page.url.startswith(OZON_BASE):
-                return page, False
+                if not self._page_marker(page).startswith(AUTOMATION_PAGE_NAME_PREFIX):
+                    return page, False
 
         if handler_name == "_fetch_maozi_sku3":
             extension_prefix = f"chrome-extension://{self.extension_id}/"
