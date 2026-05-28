@@ -27,6 +27,10 @@ except ImportError:
 
 _CLEANUP_EXCEPTIONS = (TargetClosedError, GreenletError, ConnectionError, OSError)
 
+import logging
+
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+
 MAOZI_SELECTION_URL = "https://ozon.maozierp.com/#/selection/top-list"
 MAOZI_SELECTION_ORIGIN = "https://ozon.maozierp.com"
 AUTOMATION_PAGE_NAME_PREFIX = "ozon-pipeline:"
@@ -290,7 +294,7 @@ class BrowserOzonClient:
                     pass
                 except Exception:
                     pass
-                time.sleep(0.3)
+            time.sleep(2)
         finally:
             self._context = None
             self._session_owns_context = False
