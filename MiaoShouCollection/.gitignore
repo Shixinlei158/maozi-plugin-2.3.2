@@ -1,0 +1,17 @@
+# Local secrets
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Runtime state
+profiles/
+logs/
+data/
+
+# Temporary artifacts
+tmp-*.png
+*.log
