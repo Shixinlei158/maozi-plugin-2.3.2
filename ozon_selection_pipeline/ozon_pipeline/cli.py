@@ -308,6 +308,8 @@ def run_seller_network(
     qualified_skus = 0
     rejected_skus = 0
     deferred_skus = 0
+    deferred_fetch_failed = 0
+    deferred_data_incomplete = 0
     stored_offer_rows = 0
     consecutive_failures = 0
     max_consecutive_failures = 10
@@ -412,6 +414,8 @@ def run_seller_network(
         seller_qualified = 0
         seller_rejected = 0
         seller_deferred = 0
+        seller_deferred_fetch_failed = 0
+        seller_deferred_data_incomplete = 0
         seller_skipped = 0
         seller_offer_rows = 0
         selected_items = items[: sku_limit or None]
@@ -542,6 +546,7 @@ def run_seller_network(
                 "qualified": False,
                 "strict_qualified": False,
                 "transient_failed": True,
+                "deferred_reason": "fetch_failed",
                 "batch_skipped": False,
                 "rule_reason": reason,
                 "status_update_sales": None,
@@ -610,11 +615,12 @@ def run_seller_network(
         def consume_seller_home_result(item_result: dict[str, Any] | None) -> None:
             nonlocal seller_skus, total_skus, seller_qualified, qualified_skus
             nonlocal seller_rejected, rejected_skus, seller_deferred, deferred_skus, seller_skipped, seller_offer_rows, stored_offer_rows
+            nonlocal seller_deferred_fetch_failed, seller_deferred_data_incomplete
             if not item_result:
                 return
-            
+
             seller_results.append(item_result)
-            
+
             sku = item_result["sku"]
             sku_result = item_result["sku_result"]
             seller_skus += 1
@@ -632,6 +638,11 @@ def run_seller_network(
             if sku_result.get("transient_failed"):
                 seller_deferred += 1
                 deferred_skus += 1
+                deferred_reason = sku_result.get("deferred_reason", "")
+                if deferred_reason == "fetch_failed":
+                    seller_deferred_fetch_failed += 1
+                else:
+                    seller_deferred_data_incomplete += 1
                 return
             if sku_result["qualified"]:
                 seller_qualified += 1
@@ -706,11 +717,14 @@ def run_seller_network(
             f"skus={seller_skus}",
             f"qualified={seller_qualified}",
             f"rejected={seller_rejected}",
-            f"deferred={seller_deferred}",
+            f"deferred={seller_deferred}(fetch_fail={seller_deferred_fetch_failed}|incomplete={seller_deferred_data_incomplete})",
             f"skipped={seller_skipped}",
             f"offers={seller_offer_rows}",
             f"total={total_elapsed:.1f}s",
         )
+
+        deferred_fetch_failed += seller_deferred_fetch_failed
+        deferred_data_incomplete += seller_deferred_data_incomplete
 
         if unlimited_depth or depth < max_depth:
             for next_seller in seller_offer_urls.values():
@@ -729,6 +743,8 @@ def run_seller_network(
         "qualified_skus": qualified_skus,
         "rejected_skus": rejected_skus,
         "deferred_skus": deferred_skus,
+        "deferred_fetch_failed": deferred_fetch_failed,
+        "deferred_data_incomplete": deferred_data_incomplete,
         "skipped_skus": 0,
         "seller_offers": stored_offer_rows,
     }
@@ -1328,6 +1344,8 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
     total_qualified = 0
     total_rejected = 0
     total_deferred = 0
+    total_deferred_fetch_failed = 0
+    total_deferred_data_incomplete = 0
     total_offers = 0
     round_no = 0
     consecutive_empty_rounds = 0
@@ -1416,6 +1434,8 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
         total_qualified += stats["qualified_skus"]
         total_rejected += stats["rejected_skus"]
         total_deferred += stats["deferred_skus"]
+        total_deferred_fetch_failed += stats.get("deferred_fetch_failed", 0)
+        total_deferred_data_incomplete += stats.get("deferred_data_incomplete", 0)
         total_offers += stats["seller_offers"]
 
         print(
@@ -1425,7 +1445,7 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
             f"skus={stats['total_skus']}",
             f"qualified={stats['qualified_skus']}",
             f"rejected={stats['rejected_skus']}",
-            f"deferred={stats['deferred_skus']}",
+            f"deferred={stats['deferred_skus']}(fetch_fail={stats.get('deferred_fetch_failed',0)}|incomplete={stats.get('deferred_data_incomplete',0)})",
             f"offers={stats['seller_offers']}",
         )
 
@@ -1448,7 +1468,7 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
         f"total_skus={total_skus}",
         f"total_qualified={total_qualified}",
         f"total_rejected={total_rejected}",
-        f"total_deferred={total_deferred}",
+        f"total_deferred={total_deferred}(fetch_fail={total_deferred_fetch_failed}|incomplete={total_deferred_data_incomplete})",
         f"total_offers={total_offers}",
     )
 
@@ -2088,6 +2108,7 @@ def process_sku(
                     "qualified": False,
                     "strict_qualified": False,
                     "transient_failed": True,
+                    "deferred_reason": "fetch_failed",
                     "rule_reason": reason,
                     "status_update_sales": None,
                     "status_update_variant": None,
@@ -2290,6 +2311,7 @@ def process_sku(
             "selection_result": preview_rule,
             "plugin_card": plugin_card,
             "transient_failed": defer_pending_refresh or batch_missing_offer_count,
+            "deferred_reason": "data_incomplete" if (defer_pending_refresh or batch_missing_offer_count) else None,
             "metric_raw": response,
             "offers": offers or [],
         }

@@ -15,6 +15,18 @@ from .config import ROOT_DIR, settings
 from .ozon_frontend import OZON_BASE, parse_seller_home_page, parse_seller_offers_widget
 from .util import grams_from_text, percent_text_to_decimal, to_decimal, to_int
 
+try:
+    from playwright._impl._errors import TargetClosedError
+except ImportError:
+    TargetClosedError = Exception  # type: ignore[assignment,misc]
+
+try:
+    from greenlet import error as GreenletError
+except ImportError:
+    GreenletError = Exception  # type: ignore[assignment,misc]
+
+_CLEANUP_EXCEPTIONS = (TargetClosedError, GreenletError, ConnectionError, OSError)
+
 MAOZI_SELECTION_URL = "https://ozon.maozierp.com/#/selection/top-list"
 MAOZI_SELECTION_ORIGIN = "https://ozon.maozierp.com"
 AUTOMATION_PAGE_NAME_PREFIX = "ozon-pipeline:"
@@ -155,14 +167,19 @@ class BrowserOzonClient:
         if not self.cdp_url:
             return {"reachable": False, "reason": "cdp_not_configured"}
         if self._context is not None:
-            pages = [page.url for page in self._context.pages]
-            return {
-                "reachable": True,
-                "cdp_url": self.cdp_url,
-                "context_count": 1,
-                "page_count": len(pages),
-                "pages": pages,
-            }
+            try:
+                pages = [page.url for page in self._context.pages]
+                return {
+                    "reachable": True,
+                    "cdp_url": self.cdp_url,
+                    "context_count": 1,
+                    "page_count": len(pages),
+                    "pages": pages,
+                }
+            except _CLEANUP_EXCEPTIONS:
+                return {"reachable": False, "reason": "target_closed"}
+            except Exception:
+                return {"reachable": False, "reason": "unknown_error"}
         sync_playwright = import_sync_playwright()
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(self.cdp_url)
@@ -209,7 +226,12 @@ class BrowserOzonClient:
         try:
             yield self
         finally:
-            self.close_session()
+            try:
+                self.close_session()
+            except _CLEANUP_EXCEPTIONS:
+                pass
+            except Exception:
+                pass
 
     def open_session(self) -> None:
         if self._playwright is not None:
@@ -256,14 +278,19 @@ class BrowserOzonClient:
                 try:
                     if page is not None and not page.is_closed():
                         page.close()
+                except _CLEANUP_EXCEPTIONS:
+                    pass
                 except Exception:
                     pass
             self._sticky_pages.clear()
             if self._context is not None and self._session_owns_context:
                 try:
                     self._context.close()
+                except _CLEANUP_EXCEPTIONS:
+                    pass
                 except Exception:
                     pass
+                time.sleep(0.3)
         finally:
             self._context = None
             self._session_owns_context = False
@@ -273,6 +300,10 @@ class BrowserOzonClient:
             if self._playwright_cm is not None:
                 try:
                     self._playwright_cm.__exit__(None, None, None)
+                except _CLEANUP_EXCEPTIONS:
+                    pass
+                except Exception:
+                    pass
                 finally:
                     self._playwright_cm = None
                     self._playwright = None
@@ -386,6 +417,8 @@ class BrowserOzonClient:
                     if owned:
                         try:
                             page.close()
+                        except _CLEANUP_EXCEPTIONS:
+                            pass
                         except Exception:
                             pass
                     if self.cdp_url:
@@ -424,6 +457,8 @@ class BrowserOzonClient:
                             if owned:
                                 try:
                                     page.close()
+                                except _CLEANUP_EXCEPTIONS:
+                                    pass
                                 except Exception:
                                     pass
                             self._prune_unused_pages(context, current_page=page)
@@ -437,7 +472,12 @@ class BrowserOzonClient:
                     self._prepare_page(page)
                     return handler(page, *args, **kwargs)
                 finally:
-                    context.close()
+                    try:
+                        context.close()
+                    except _CLEANUP_EXCEPTIONS:
+                        pass
+                    except Exception:
+                        pass
 
     def _chrome_launch_env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -859,6 +899,8 @@ class BrowserOzonClient:
 
             try:
                 page.close()
+            except _CLEANUP_EXCEPTIONS:
+                pass
             except Exception:
                 pass
 
