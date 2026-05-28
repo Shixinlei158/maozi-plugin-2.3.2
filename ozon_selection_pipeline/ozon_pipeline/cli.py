@@ -20,6 +20,7 @@ from .repository import (
     bulk_upsert_seller_home_skus,
     bulk_upsert_seed_skus,
     bulk_upsert_sku_results,
+    cleanup_processed_seller_home_skus,
     upsert_seller_home_sku,
     get_seller_shop,
     get_recent_top_list_run,
@@ -292,6 +293,7 @@ def run_seller_network(
     max_scrolls: int,
     seller_sku_workers: int,
     stop_event: Any | None = None,
+    seller_page_workers: int = 1,
 ) -> dict[str, int]:
     max_sellers = max_sellers if max_sellers > 0 else 1000000
     unlimited_depth = max_depth < 0
@@ -326,36 +328,95 @@ def run_seller_network(
         prefix="seller",
     )
 
+    seller_page_workers = max(1, int(seller_page_workers))
+    if not browser.cdp_url:
+        seller_page_workers = 1
+
+    def _crawl_seller_concurrent(seller_url: str) -> dict[str, Any]:
+        clone = browser.clone()
+        clone.open_session()
+        try:
+            return load_seller_home_products(seller_url, clone, max_scrolls=max_scrolls)
+        finally:
+            try:
+                clone.close_session()
+            except Exception:
+                pass
+
     while queue and processed_sellers < max_sellers:
         if stop_event is not None and stop_event.is_set():
             print("seller network stop requested: exiting before next seller")
             break
-        seller = queue.popleft()
-        url = seller["url"]
-        depth = int(seller["depth"])
-        name = seller.get("name")
-        normalized_url = url.rstrip("/")
-        if normalized_url in seen_urls:
-            continue
-        seen_urls.add(normalized_url)
-        if not unlimited_depth and depth > max_depth:
+
+        # 批量出队
+        crawl_batch: list[dict[str, Any]] = []
+        while queue and len(crawl_batch) < seller_page_workers and processed_sellers + len(crawl_batch) < max_sellers:
+            seller = queue.popleft()
+            normalized = seller["url"].rstrip("/")
+            if normalized in seen_urls:
+                continue
+            if not unlimited_depth and int(seller["depth"]) > max_depth:
+                continue
+            crawl_batch.append(seller)
+            seen_urls.add(normalized)
+
+        if not crawl_batch:
             continue
 
-        key = upsert_seller_shop(url, name=name)
-        if depth > 0 and seller_recently_collected(url):
-            skipped_recent += 1
-            shop = get_seller_shop(key) or {}
-            print(
-                "skip recent seller:",
-                url,
-                "| name=",
-                shop.get("name") or name or "<unknown>",
-            )
-            continue
-
+        # 并发爬取
         crawl_start = time.perf_counter()
-        try:
-            result = load_seller_home_products(url, browser, max_scrolls=max_scrolls)
+        crawl_map: dict[str, Any] = {}
+        if len(crawl_batch) > 1 and seller_page_workers > 1:
+            with ThreadPoolExecutor(max_workers=len(crawl_batch)) as ex:
+                futures = {ex.submit(_crawl_seller_concurrent, s["url"]): s for s in crawl_batch}
+                for f in as_completed(futures):
+                    s = futures[f]
+                    try:
+                        crawl_map[s["url"]] = f.result()
+                    except Exception as exc:
+                        vlog("batch crawl failed:", {"url": s["url"], "error": str(exc)[:120]}, prefix="seller")
+                        crawl_map[s["url"]] = None
+        else:
+            s = crawl_batch[0]
+            try:
+                crawl_map[s["url"]] = load_seller_home_products(s["url"], browser, max_scrolls=max_scrolls)
+            except Exception:
+                crawl_map[s["url"]] = None
+
+        # 串行处理每个卖家
+        for seller in crawl_batch:
+            url = seller["url"]
+            depth = int(seller["depth"])
+            name = seller.get("name")
+
+            key = upsert_seller_shop(url, name=name)
+            if depth > 0 and seller_recently_collected(url):
+                skipped_recent += 1
+                shop = get_seller_shop(key) or {}
+                print(
+                    "skip recent seller:",
+                    url,
+                    "| name=",
+                    shop.get("name") or name or "<unknown>",
+                )
+                continue
+
+            result = crawl_map.get(url)
+            if result is None:
+                consecutive_failures += 1
+                print(
+                    "skip seller (load failed):",
+                    url,
+                    f"| 连续失败={consecutive_failures}",
+                )
+                if consecutive_failures >= max_consecutive_failures:
+                    wait_seconds = 60
+                    print(f"连续失败 {consecutive_failures} 次，暂停 {wait_seconds} 秒后重试...")
+                    time.sleep(wait_seconds)
+                    consecutive_failures = 0
+                processed_sellers += 1
+                continue
+
             crawl_elapsed = time.perf_counter() - crawl_start
             items = result.get("items") or []
             source = result.get("source") or "unknown"
@@ -383,31 +444,6 @@ def run_seller_network(
                 "| crawl=",
                 f"{crawl_elapsed:.1f}s",
             )
-        except Exception as exc:
-            detail = summarize_exception(exc)
-            consecutive_failures += 1
-            print(
-                "skip seller (load failed):",
-                url,
-                "| error=",
-                detail or str(exc)[:120],
-                f"| 连续失败={consecutive_failures}",
-            )
-            vlog(
-                "seller page load failed, skipping:",
-                {"url": url, "error": detail or str(exc)},
-                prefix="seller",
-            )
-            mark_seller_collected(key)
-            processed_sellers += 1
-            if consecutive_failures >= max_consecutive_failures:
-                wait_seconds = 60
-                print(
-                    f"连续失败 {consecutive_failures} 次，暂停 {wait_seconds} 秒后重试...",
-                )
-                time.sleep(wait_seconds)
-                consecutive_failures = 0
-            continue
 
         seller_offer_urls: dict[str, dict[str, Any]] = {}
         seller_skus = 0
@@ -707,6 +743,9 @@ def run_seller_network(
                 f"rows={len(seller_results)}",
                 f"elapsed={db_write_elapsed:.1f}s",
             )
+            cleanup_deleted = cleanup_processed_seller_home_skus(url)
+            if cleanup_deleted:
+                vlog("seller home staging cleaned:", f"seller={url}", f"deleted={cleanup_deleted}", prefix="seller")
 
         mark_seller_collected(key)
         processed_sellers += 1
@@ -1406,6 +1445,7 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
                     sku_limit=args.sku_limit,
                     max_scrolls=args.max_scrolls,
                     seller_sku_workers=args.seller_sku_workers,
+                    seller_page_workers=args.seller_page_workers,
                     stop_event=stop_event,
                 )
         except ManualInterventionRequired as exc:
@@ -2483,6 +2523,7 @@ def build_parser() -> argparse.ArgumentParser:
     expand_seller_backlog.add_argument("--sku-limit", type=int, default=0)
     expand_seller_backlog.add_argument("--max-scrolls", type=int, default=8)
     expand_seller_backlog.add_argument("--seller-sku-workers", type=int, default=settings.seller_sku_workers)
+    expand_seller_backlog.add_argument("--seller-page-workers", type=int, default=settings.seller_page_workers)
     add_browser_options(expand_seller_backlog, include_headless=True)
     expand_seller_backlog.set_defaults(func=cmd_expand_seller_backlog)
 

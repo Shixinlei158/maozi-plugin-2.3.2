@@ -273,3 +273,69 @@ def extract_tile_image(tile: dict[str, Any]) -> str | None:
         if link:
             return normalize_url(link)
     return None
+
+
+def parse_seller_home_tile(tile: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+
+    for block in tile.get("mainState") or []:
+        block_type = block.get("type")
+
+        if block_type == "labelList":
+            label_list = block.get("labelList") or {}
+            items = label_list.get("items") or []
+            texts = [i.get("title", "") for i in items if i.get("title")]
+            if texts:
+                result["stock_label"] = "; ".join(texts)
+
+        elif block_type == "labelListV2":
+            label_v2 = block.get("labelListV2") or {}
+            test_info = label_v2.get("testInfo") or {}
+            automation_id = test_info.get("automatizationId", "")
+            if automation_id == "tile-list-rating":
+                texts = []
+                for item in label_v2.get("items") or []:
+                    text_obj = item.get("text") or {}
+                    t = text_obj.get("text", "")
+                    if t:
+                        texts.append(t)
+                combined = " ".join(texts)
+                rating_match = re.search(r"(\d+\.?\d*)", combined)
+                if rating_match:
+                    try:
+                        result["seller_rating"] = float(rating_match.group(1))
+                    except ValueError:
+                        pass
+                review_match = re.search(r"(\d[\d\s]*)\s*отзыв", combined)
+                if review_match:
+                    try:
+                        result["seller_review_count"] = int(review_match.group(1).replace(" ", ""))
+                    except ValueError:
+                        pass
+
+    brand_logo = tile.get("brandLogo")
+    if isinstance(brand_logo, dict):
+        logo = brand_logo.get("logo")
+        if logo:
+            result["brand_logo_url"] = normalize_url(logo)
+
+    multi_button = tile.get("multiButton") or {}
+    ozon_button = multi_button.get("ozonButton") or {}
+    atc = ozon_button.get("addToCart") or {}
+    qb = atc.get("quantityButton") or {}
+    max_items = qb.get("maxItems")
+    if isinstance(max_items, (int, float)):
+        result["stock_max"] = int(max_items)
+    action_button = atc.get("actionButton") or {}
+    delivery_title = action_button.get("title")
+    if delivery_title and not re.search(r"^\d+$", delivery_title):
+        result["delivery_hint"] = str(delivery_title)[:64]
+
+    tile_image = tile.get("tileImage") or {}
+    badge_v2 = tile_image.get("leftBottomBadgeV2")
+    if isinstance(badge_v2, dict):
+        badge_text = badge_v2.get("text")
+        if badge_text:
+            result["badges"] = [badge_text]
+
+    return result

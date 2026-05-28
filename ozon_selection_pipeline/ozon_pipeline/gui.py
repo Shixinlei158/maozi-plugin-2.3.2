@@ -324,7 +324,9 @@ class App:
                        tooltip="每组批量请求之间的休眠时间。建议：500")
         self._add_param(tab_conc, 2, 0, "卖家SKU线程数 (seller_sku_workers)", "seller_sku_workers", str(settings.seller_sku_workers), "int", min_val=1, max_val=32,
                        tooltip="并行处理卖家主页SKU的本地线程数。示例：4")
-        self._add_param(tab_conc, 2, 1, "种子SKU线程数 (seed_sku_workers)", "seed_sku_workers", str(settings.seed_sku_workers), "int", min_val=1, max_val=32,
+        self._add_param(tab_conc, 2, 1, "卖家页并发数 (seller_page_workers)", "seller_page_workers", str(settings.seller_page_workers), "int", min_val=1, max_val=8,
+                       tooltip="同时爬取卖家主页的数量。增大可提速，但对内存和CDP管道有压力。建议：2-3")
+        self._add_param(tab_conc, 3, 0, "种子SKU线程数 (seed_sku_workers)", "seed_sku_workers", str(settings.seed_sku_workers), "int", min_val=1, max_val=32,
                        tooltip="并行处理种子池SKU的本地线程数。示例：8")
 
         # Tab 3: 高级与特定模式
@@ -546,6 +548,7 @@ class App:
             "concurrency": str(settings.top_list_sku3_batch_concurrency),
             "chunk_delay_ms": str(settings.top_list_sku3_batch_chunk_delay_ms),
             "seller_sku_workers": str(settings.seller_sku_workers),
+            "seller_page_workers": str(settings.seller_page_workers),
             "seed_sku_workers": str(settings.seed_sku_workers),
             "retry_failed_now": False,
             "retry_deferred_now": False,

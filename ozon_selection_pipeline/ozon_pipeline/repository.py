@@ -8,6 +8,7 @@ from typing import Any
 
 from . import db
 from .config import settings
+from .ozon_frontend import parse_seller_home_tile
 from .rules import TOP_LIST_SEED_RULE, ProductSelectionResult, evaluate_selection_rule, price_to_cny
 from .util import (
     grams_from_text,
@@ -620,9 +621,9 @@ def bulk_upsert_sku_results(
             m_row["collected_at"] = now
             metric_rows.append(m_row)
         
-        # 2. 准备产品快照行 (仅达标 SKU)
-        if selection_result and selection_result.matched and metric:
-            p_row = {
+        # 2. 准备产品快照行
+        if metric:
+            p_row: dict[str, Any] = {
                 "sku": sku,
                 "variant_id": metric.get("variant_id"),
                 "product_url": product_snapshot.get("product_url") if product_snapshot else None,
@@ -640,8 +641,21 @@ def bulk_upsert_sku_results(
                 "maozi_fields_zh_json": build_maozi_fields_zh(metric, plugin_card=plugin_card, seller_offer_count=seller_offer_count),
                 "maozi_collected_at": now,
             }
-            # 补齐其它 rfbs/fbp 字段... 这里简化一下，实际按需补全
-            for f in ["rfbs_leq_1500", "rfbs_leq_5000", "rfbs_gt_5000", "fbp_leq_1500", "fbp_leq_5000", "fbp_gt_5000", 
+            # 从 productsnapshot 中提取原始 tile 并解析高价值字段
+            seller_home_item = (product_snapshot.get("raw") or {}).get("seller_home") if product_snapshot else None
+            raw_tile = seller_home_item.get("raw") if isinstance(seller_home_item, dict) else None
+            if isinstance(raw_tile, dict):
+                tile_parsed = parse_seller_home_tile(raw_tile)
+                p_row["seller_rating"] = tile_parsed.get("seller_rating")
+                p_row["seller_review_count"] = tile_parsed.get("seller_review_count")
+                p_row["stock_max"] = tile_parsed.get("stock_max")
+                p_row["stock_label"] = tile_parsed.get("stock_label")
+                p_row["brand_logo_url"] = tile_parsed.get("brand_logo_url")
+                badges_val = tile_parsed.get("badges")
+                p_row["badges"] = json_dumps(badges_val) if badges_val else None
+                p_row["delivery_hint"] = tile_parsed.get("delivery_hint")
+                p_row["raw_seller_home_json"] = json_dumps(raw_tile)
+            for f in ["rfbs_leq_1500", "rfbs_leq_5000", "rfbs_gt_5000", "fbp_leq_1500", "fbp_leq_5000", "fbp_gt_5000",
                       "avg_orders_on_acc_days", "avg_gmv_on_acc_days", "avg_gmv_on_acc_days_cny", "drr", "days_in_promo", "discount"]:
                 p_row[f] = metric.get(f)
             product_rows.append(p_row)
@@ -1623,21 +1637,18 @@ def prepare_seller_home_sku_rows(seller_home_url: str, items: list[dict[str, Any
             continue
         seen.add(sku)
         product_url = item.get("href") or item.get("product_url")
-        title = item.get("title")
-        price_amount = to_decimal(item.get("price_amount"))
-        currency = item.get("currency")
-        main_image_url = item.get("image_url") or item.get("main_image_url")
-        raw_json = None if settings.seller_fast_mode else json_dumps(item)
+        raw_tile = item.get("raw")
+        raw_tile_json = json_dumps(raw_tile) if raw_tile else None
         rows.append(
             {
                 "seller_key": key,
                 "sku": sku,
                 "product_url": product_url,
-                "title": title,
-                "price_amount": price_amount,
-                "currency": currency,
-                "main_image_url": main_image_url,
-                "raw_json": raw_json,
+                "title": None,
+                "price_amount": None,
+                "currency": None,
+                "main_image_url": None,
+                "raw_json": raw_tile_json,
                 "source_type": "seller_home",
                 "source_key": key,
                 "source_url": seller_home_url,
@@ -1646,10 +1657,10 @@ def prepare_seller_home_sku_rows(seller_home_url: str, items: list[dict[str, Any
                 "source_rank": None,
                 "product_data": {
                     "product_url": product_url,
-                    "title": title,
-                    "price": price_amount,
-                    "currency": currency,
-                    "main_image_url": main_image_url,
+                    "title": None,
+                    "price": None,
+                    "currency": None,
+                    "main_image_url": None,
                     "raw": {"seller_home": item},
                 },
             }
@@ -1744,3 +1755,12 @@ def extract_sku_from_product_url(url: str) -> str | None:
     if candidates:
         return candidates[-1]
     return None
+
+
+def cleanup_processed_seller_home_skus(seller_home_url: str) -> int:
+    """删除已处理完的卖家主页暂存 SKU。"""
+    key = seller_key(seller_home_url)
+    return db.execute(
+        "DELETE FROM seller_home_skus WHERE seller_key = %(seller_key)s",
+        {"seller_key": key},
+    )
