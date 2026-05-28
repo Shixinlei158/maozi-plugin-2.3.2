@@ -417,32 +417,96 @@ class App:
         self._worker_thread.start()
 
     def _run_rpa(self):
-        """执行单个 SKU 的图搜 RPA"""
+        """执行图搜 RPA - 循环处理所有待处理SKU"""
         try:
             sys.stdout = _QueueWriter(self._log_queue)
             sys.stderr = _QueueWriter(self._log_queue)
 
-            # 1. 获取待处理 SKU
-            row = self._get_pending_sku()
-            if not row:
+            # 1. 获取所有待处理 SKU
+            rows = self._get_pending_skus(1000)
+            if not rows:
                 self._log_queue.put("没有待图搜的 SKU\n")
                 return
 
-            sku_id, image_url = row
-            self._log_queue.put(f"SKU ID: {sku_id}\n")
-            self._log_queue.put(f"图片 URL: {image_url}\n")
+            self._log_queue.put(f"待处理 SKU 数量: {len(rows)}\n")
 
             # 2. 获取筛选条件
             active_filters = [k for k, v in self._filter_vars.items() if v.get()]
             self._log_queue.put(f"筛选条件: {active_filters}\n")
 
-            # 3. 执行图搜
-            success = self._execute_image_search(sku_id, image_url, active_filters)
+            # 3. 循环执行图搜
+            pw = sync_playwright().start()
+            browser = pw.chromium.connect_over_cdp(CDP_URL)
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = context.new_page()
+            page.goto(self._url_var.get().strip() or DEFAULT_TARGET_URL, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(3000)
 
-            if success:
-                self._log_queue.put("===== RPA 完成 =====\n")
-            else:
-                self._log_queue.put("===== RPA 失败 =====\n")
+            iframe = None
+            for f in page.frames:
+                if "aibuy.1688.com" in f.url:
+                    iframe = f
+                    break
+
+            if not iframe:
+                self._log_queue.put("未找到1688 iframe\n")
+                return
+
+            # 保存实例变量供wrapper使用
+            self._current_page = page
+            self._current_iframe = iframe
+            self._current_captured = captured
+            self._current_prev_count = 0
+
+            # 全局响应监听
+            captured = []
+            def on_response(response):
+                if IMAGE_SEARCH_API in response.url:
+                    try:
+                        captured.append(response.json())
+                    except Exception:
+                        pass
+            context.on("response", on_response)
+
+            success_count = 0
+            fail_count = 0
+
+            for i, (sku_id, image_url) in enumerate(rows):
+                if self._stop_flag.is_set():
+                    self._log_queue.put("用户停止了 RPA\n")
+                    break
+
+                self._log_queue.put(f"\n[{i+1}/{len(rows)}] 处理 SKU {sku_id}\n")
+                self._progress_label.config(text=f"进度: {i+1}/{len(rows)}")
+
+                if i > 0:
+                    # 复位页面
+                    self._log_queue.put("正在复位页面...\n")
+                    try:
+                        page.locator("text=妙手-1688精翻货盘").first.click()
+                        page.wait_for_timeout(1500)
+                        page.locator("text=1688跨境热卖现货").first.click()
+                        page.wait_for_timeout(3000)
+                        for f2 in page.frames:
+                            if "aibuy.1688.com" in f2.url:
+                                iframe = f2
+                                break
+                    except Exception as e:
+                        self._log_queue.put(f"复位失败: {e}\n")
+
+                try:
+                    self._current_prev_count = len(captured)
+                    self._current_iframe = iframe
+                    success = self._execute_image_search_inline(page, iframe, sku_id, image_url, active_filters, captured, self._current_prev_count)
+                    if success:
+                        success_count += 1
+                    else:
+                        fail_count += 1
+                except Exception as e:
+                    self._log_queue.put(f"SKU {sku_id} 异常: {e}\n")
+                    fail_count += 1
+
+            self._log_queue.put(f"\n===== RPA 完成: 成功={success_count}, 失败={fail_count} =====\n")
 
         except Exception as e:
             self._log_queue.put(f"RPA 异常: {e}\n")
@@ -497,7 +561,66 @@ class App:
             sys.stderr = self._old_stderr
             self.root.after(0, self._rpa_finished)
 
-    def _execute_image_search(self, sku_id: int, image_url: str, filters: list[str]) -> bool:
+    def _execute_image_search(self, sku_id, image_url, filters):
+        """单次执行图搜并写入数据库(复用连接)"""
+        return self._execute_image_search_inline(
+            getattr(self, '_current_page', None),
+            getattr(self, '_current_iframe', None),
+            sku_id, image_url, filters,
+            getattr(self, '_current_captured', []),
+            getattr(self, '_current_prev_count', 0)
+        )
+
+    def _execute_image_search_inline(self, page, iframe, sku_id, image_url, filters, captured_all, prev_count):
+        """复用浏览器连接执行单次图搜"""
+        try:
+            # 点击图片链接搜索
+            iframe.locator("text=图片链接搜索").first.click()
+            page.wait_for_timeout(2000)
+
+            # 填入URL
+            textarea = iframe.locator("textarea").first
+            textarea.wait_for(state="visible", timeout=15000)
+            textarea.fill(image_url)
+            page.wait_for_timeout(500)
+
+            # 点确定
+            iframe.locator('span:has-text("确定")').first.click()
+            page.wait_for_timeout(8000)
+
+            # 设置筛选条件
+            dropdowns = iframe.locator('[class*="select"]').all()
+            for dropdown in dropdowns:
+                text = dropdown.text_content() or ""
+                if "商品信息" in text or "请选择" in text:
+                    dropdown.click()
+                    page.wait_for_timeout(500)
+                    break
+            for f in filters:
+                try:
+                    iframe.locator(f"text={f}").first.click()
+                    page.wait_for_timeout(300)
+                except Exception:
+                    pass
+            try:
+                iframe.locator("text=图搜结果").first.click(timeout=2000)
+            except Exception:
+                pass
+            page.wait_for_timeout(5000)
+
+            # 保存结果
+            new_responses = captured_all[prev_count:]
+            if new_responses:
+                image_links, detail_urls = self._parse_response(new_responses[0])
+                self._save_to_db(sku_id, image_links, detail_urls, new_responses)
+                self._log_queue.put(f"完成: {len(image_links)} 张图, {len(detail_urls)} 个链接\n")
+                return True
+            else:
+                self._log_queue.put("未捕获到响应\n")
+                return False
+        except Exception as e:
+            self._log_queue.put(f"图搜执行失败: {e}\n")
+            return False
         """执行单次图搜 RPA"""
         captured = []
 
