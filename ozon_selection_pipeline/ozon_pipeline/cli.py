@@ -309,6 +309,8 @@ def run_seller_network(
     rejected_skus = 0
     deferred_skus = 0
     stored_offer_rows = 0
+    consecutive_failures = 0
+    max_consecutive_failures = 10
     vlog(
         "run_seller_network start:",
         {
@@ -381,11 +383,13 @@ def run_seller_network(
             )
         except Exception as exc:
             detail = summarize_exception(exc)
+            consecutive_failures += 1
             print(
                 "skip seller (load failed):",
                 url,
                 "| error=",
                 detail or str(exc)[:120],
+                f"| 连续失败={consecutive_failures}",
             )
             vlog(
                 "seller page load failed, skipping:",
@@ -394,6 +398,13 @@ def run_seller_network(
             )
             mark_seller_collected(key)
             processed_sellers += 1
+            if consecutive_failures >= max_consecutive_failures:
+                wait_seconds = 60
+                print(
+                    f"连续失败 {consecutive_failures} 次，暂停 {wait_seconds} 秒后重试...",
+                )
+                time.sleep(wait_seconds)
+                consecutive_failures = 0
             continue
 
         seller_offer_urls: dict[str, dict[str, Any]] = {}
@@ -688,6 +699,7 @@ def run_seller_network(
 
         mark_seller_collected(key)
         processed_sellers += 1
+        consecutive_failures = 0  # 成功处理，重置连续失败计数
         total_elapsed = time.perf_counter() - crawl_start
         print(
             "seller summary:",

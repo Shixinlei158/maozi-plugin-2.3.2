@@ -1241,7 +1241,13 @@ class BrowserOzonClient:
                 raise RuntimeError(f"Seller page processing timed out ({settings.seller_page_timeout_seconds}s limit): {seller_url}") from exc
             # Fallback to DOM scroll if API failed but time remains
             pass
-        return self._fetch_seller_home_products_dom(page, seller_url, max_scrolls=max_scrolls, deadline=deadline)
+        try:
+            return self._fetch_seller_home_products_dom(page, seller_url, max_scrolls=max_scrolls, deadline=deadline)
+        except Exception:
+            # 页面可能已损坏，从 sticky 缓存中移除以便下次创建新页面
+            self._sticky_pages.pop("_fetch_seller_home_products", None)
+            self._sticky_pages.pop("_fetch_seller_home_products_api", None)
+            raise
 
     def _fetch_seller_home_products_api(self, page: Any, seller_url: str, deadline: float | None = None) -> dict[str, Any]:
         # Must be on an Ozon page for same-origin credentials to work.
