@@ -1490,11 +1490,17 @@ def get_seller_shop(seller_key_value: str) -> dict[str, Any] | None:
 
 def list_due_seller_shops(process_limit: int = 0) -> list[dict[str, Any]]:
     sql = """
-        SELECT seller_key, name, home_url, logo_url, last_collected_at, next_collect_after
+        SELECT seller_key, name, home_url, logo_url, last_collected_at, next_collect_after,
+               last_qualified_count, total_collect_attempts
         FROM seller_shops
         WHERE home_url IS NOT NULL
           AND home_url <> ''
           AND (last_collected_at IS NULL OR next_collect_after IS NULL OR next_collect_after <= CURRENT_TIMESTAMP)
+          AND NOT (
+              total_collect_attempts >= 3
+              AND last_qualified_count = 0
+              AND next_collect_after > DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 7 DAY)
+          )
         ORDER BY
           CASE WHEN last_collected_at IS NULL THEN 0 ELSE 1 END ASC,
           COALESCE(next_collect_after, TIMESTAMP('1970-01-01 00:00:00')) ASC,
@@ -1721,15 +1727,17 @@ def bulk_upsert_seller_home_skus(seller_home_url: str, items: list[dict[str, Any
     return [(row["sku"], row["product_data"]["raw"]["seller_home"]) for row in rows]
 
 
-def mark_seller_collected(seller_key_value: str) -> None:
+def mark_seller_collected(seller_key_value: str, qualified_count: int = 0) -> None:
     db.execute(
         """
         UPDATE seller_shops
         SET last_collected_at=CURRENT_TIMESTAMP,
-            next_collect_after=DATE_ADD(CURRENT_TIMESTAMP, INTERVAL %(days)s DAY)
+            next_collect_after=DATE_ADD(CURRENT_TIMESTAMP, INTERVAL %(days)s DAY),
+            last_qualified_count=%(qualified_count)s,
+            total_collect_attempts=total_collect_attempts + 1
         WHERE seller_key=%(seller_key)s
         """,
-        {"seller_key": seller_key_value, "days": settings.seller_recollect_days},
+        {"seller_key": seller_key_value, "days": settings.seller_recollect_days, "qualified_count": qualified_count},
     )
 
 

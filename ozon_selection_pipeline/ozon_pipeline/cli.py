@@ -568,7 +568,7 @@ def run_seller_network(
                 "| requested=",
                 len(prepared_items),
             )
-            mark_seller_collected(key)
+            mark_seller_collected(key, qualified_count=0)
             processed_sellers += 1
             continue
         if seller_batch_prefetch_failed and not seller_prefetched_maozi:
@@ -580,7 +580,7 @@ def run_seller_network(
 
         if not prepared_items:
             vlog("seller-home no items found/saved, skipping completion", f"seller={url}", prefix="seller")
-            mark_seller_collected(key)
+            mark_seller_collected(key, qualified_count=0)
             processed_sellers += 1
             continue
 
@@ -771,7 +771,7 @@ def run_seller_network(
             if cleanup_deleted:
                 vlog("seller home staging cleaned:", f"seller={url}", f"deleted={cleanup_deleted}", prefix="seller")
 
-        mark_seller_collected(key)
+        mark_seller_collected(key, qualified_count=seller_qualified)
         processed_sellers += 1
         consecutive_failures = 0  # 成功处理，重置连续失败计数
         total_elapsed = time.perf_counter() - crawl_start
