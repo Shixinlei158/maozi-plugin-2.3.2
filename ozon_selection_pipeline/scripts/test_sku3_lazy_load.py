@@ -31,7 +31,12 @@ sys.path.insert(0, str(ROOT_DIR))
 os.chdir(ROOT_DIR)
 
 from ozon_pipeline.browser_ozon import BrowserOzonClient
+from ozon_pipeline.cli import prefetch_top_list_maozi_batch
 from ozon_pipeline.config import settings
+
+
+SKU3_BATCH_SIZE = 60
+SKU3_CONCURRENCY = 10
 
 
 def extract_sku_from_href(href: str) -> str | None:
@@ -154,22 +159,30 @@ def scroll_and_track_dom(browser, seller_url: str, api_skus: list[str], max_scro
     return sku_scroll_order
 
 
-def test_sku3_batch(browser, skus: list[str], concurrency: int):
-    """调用 SKU3 批量接口，返回 {sku: ok|error}"""
+def test_sku3_batch(browser, skus: list[str]):
+    """使用 pipeline 的 prefetch_top_list_maozi_batch (含chunk delay)"""
     results: dict[str, dict] = {}
-    raw = browser.top_list_sku3_batch(skus, concurrency=concurrency)
+    prefetched = prefetch_top_list_maozi_batch(
+        skus,
+        maozi=None,
+        browser=browser,
+        batch_size=SKU3_BATCH_SIZE,
+        concurrency=SKU3_CONCURRENCY,
+    )
     for sku_str in skus:
-        data = raw.get(sku_str)
-        if isinstance(data, dict):
-            status = data.get("status") or {}
-            results[sku_str] = {
-                "ok": True,
-                "update_sales": bool(status.get("update_sales")),
-                "update_variant": bool(status.get("update_variant")),
-                "data_keys": len(data),
-            }
-        else:
-            results[sku_str] = {"ok": False}
+        data_tuple = prefetched.get(sku_str)
+        if data_tuple is not None and isinstance(data_tuple, tuple) and len(data_tuple) == 2:
+            data, source = data_tuple
+            if isinstance(data, dict):
+                status = data.get("status") or {}
+                results[sku_str] = {
+                    "ok": True,
+                    "update_sales": bool(status.get("update_sales")),
+                    "update_variant": bool(status.get("update_variant")),
+                    "data_keys": len(data),
+                }
+                continue
+        results[sku_str] = {"ok": False}
     return results
 
 
@@ -178,7 +191,7 @@ def main():
     parser.add_argument("--seller-url", required=True)
     parser.add_argument("--cdp", default=settings.chrome_cdp_url or "http://127.0.0.1:9222")
     parser.add_argument("--max-scrolls", type=int, default=30)
-    parser.add_argument("--concurrency", type=int, default=10)
+    parser.add_argument("--concurrency", type=int, default=SKU3_CONCURRENCY)
     parser.add_argument("--skip-scroll", action="store_true", help="跳过滚动阶段，直接对比TOP/BOTTOM(基于API顺序)")
     args = parser.parse_args()
 
@@ -224,17 +237,17 @@ def main():
 
         # Step 4: 测试全部三组
         print(f"\n{'=' * 60}")
-        print(f"[Step 3] SKU3 测试 (不额外滚动, concurrency={args.concurrency})")
+        print(f"[Step 3] SKU3 测试 (chunk_size={SKU3_BATCH_SIZE}, concurrency={SKU3_CONCURRENCY}, delay={settings.top_list_sku3_batch_chunk_delay_ms}ms)")
         print("=" * 60)
 
         print(f"\n测试 TOP (浅层, {len(top_half)} SKUs)...")
-        top_results = test_sku3_batch(browser, top_half, args.concurrency)
+        top_results = test_sku3_batch(browser, top_half)
 
         print(f"测试 MID (中层, {len(mid_half)} SKUs)...")
-        mid_results = test_sku3_batch(browser, mid_half, args.concurrency)
+        mid_results = test_sku3_batch(browser, mid_half)
 
         print(f"测试 BOTTOM (深层, {len(bottom_half)} SKUs)...")
-        bottom_results = test_sku3_batch(browser, bottom_half, args.concurrency)
+        bottom_results = test_sku3_batch(browser, bottom_half)
 
         # Step 5: 对比
         print("\n" + "=" * 60)
