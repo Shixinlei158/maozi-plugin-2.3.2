@@ -78,7 +78,7 @@ class Settings:
     # 毛子 SKU3 批量预取配置 (适用于 top-list 和卖家页)
     top_list_sku3_batch_size: int = int(os.getenv("TOP_LIST_SKU3_BATCH_SIZE", "60"))
     top_list_sku3_batch_concurrency: int = int(os.getenv("TOP_LIST_SKU3_BATCH_CONCURRENCY", "16"))
-    top_list_sku3_batch_chunk_delay_ms: int = int(os.getenv("TOP_LIST_SKU3_BATCH_CHUNK_DELAY_MS", "100"))
+    top_list_sku3_batch_chunk_delay_ms: int = int(os.getenv("TOP_LIST_SKU3_BATCH_CHUNK_DELAY_MS", "500"))
     top_list_sku3_batch_min_success_rate: float = float(os.getenv("TOP_LIST_SKU3_BATCH_MIN_SUCCESS_RATE", "0.05"))
     top_list_sku3_batch_low_yield_limit: int = int(os.getenv("TOP_LIST_SKU3_BATCH_LOW_YIELD_LIMIT", "1"))
 

@@ -24,7 +24,10 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
+import sys
+
 ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT_DIR))
 os.chdir(ROOT_DIR)
 
 from ozon_pipeline.browser_ozon import BrowserOzonClient
@@ -75,19 +78,31 @@ def scroll_and_track_dom(browser, seller_url: str, api_skus: list[str], max_scro
             """从当前DOM提取所有可见的产品SKU链接"""
             skus = page.evaluate("""
                 () => {
-                    const links = Array.from(document.querySelectorAll('a[href*="/product/"]'));
                     const seen = new Set();
                     const result = [];
-                    for (const a of links) {
-                        const href = a.href || '';
-                        const match = href.match(/\\/product\\/[^/]+\\/(\\d+)\\/?/);
-                        if (match) {
-                            const sku = match[1];
-                            if (!seen.has(sku) && sku.length >= 6) {
-                                seen.add(sku);
-                                result.push(sku);
+                    // 多种选择器尝试
+                    const selectors = [
+                        'a[href*="/product/"]',
+                        'a[href*="/context/detail/"]',
+                        '[data-widget*="tile"] a[href]',
+                        '.widget-search-result-container a[href]',
+                    ];
+                    for (const sel of selectors) {
+                        try {
+                            const links = Array.from(document.querySelectorAll(sel));
+                            for (const a of links) {
+                                const href = a.href || '';
+                                const numbers = href.match(/\\d+/g);
+                                if (numbers) {
+                                    for (const n of numbers) {
+                                        if (n.length >= 6 && !seen.has(n)) {
+                                            seen.add(n);
+                                            result.push(n);
+                                        }
+                                    }
+                                }
                             }
-                        }
+                        } catch(e) {}
                     }
                     return result;
                 }

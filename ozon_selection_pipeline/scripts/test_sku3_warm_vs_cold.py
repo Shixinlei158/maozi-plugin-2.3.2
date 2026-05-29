@@ -18,7 +18,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import sys
+
 ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT_DIR))
 os.chdir(ROOT_DIR)
 
 from ozon_pipeline.browser_ozon import BrowserOzonClient
