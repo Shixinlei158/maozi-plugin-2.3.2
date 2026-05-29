@@ -14,6 +14,7 @@ from typing import Any
 from .config import ROOT_DIR, settings
 from .ozon_frontend import OZON_BASE, parse_seller_home_page, parse_seller_offers_widget
 from .util import grams_from_text, percent_text_to_decimal, to_decimal, to_int
+from .captcha_handler import SliderHandler, detect_captcha_present, detect_login_expired, auto_login, handle_plugin_login_popup, ensure_authenticated
 
 try:
     from playwright._impl._errors import TargetClosedError
@@ -223,6 +224,132 @@ class BrowserOzonClient:
             return {"has_challenge": len(challenges) > 0, "pages": challenges}
         except Exception:
             return {"has_challenge": False, "pages": [], "error": True}
+
+    def detect_captcha(self) -> dict[str, Any]:
+        """检测滑块验证码状态"""
+        if not self._context:
+            return {"has_captcha": False, "pages": []}
+        
+        captcha_pages: list[dict[str, Any]] = []
+        try:
+            pages = list(self._context.pages)
+            for page in pages:
+                try:
+                    if page.is_closed():
+                        continue
+                    has_captcha = detect_captcha_present(page)
+                    if has_captcha:
+                        captcha_pages.append({
+                            "url": page.url,
+                            "title": page.title()
+                        })
+                except Exception:
+                    continue
+            
+            return {
+                "has_captcha": len(captcha_pages) > 0,
+                "pages": captcha_pages
+            }
+        except Exception:
+            return {"has_captcha": False, "pages": [], "error": True}
+
+    def solve_captcha(self, page: Any | None = None) -> bool:
+        """自动解决滑块验证码
+        
+        Args:
+            page: 指定页面，如果为None则检测所有页面
+            
+        Returns:
+            bool: 是否成功解决
+        """
+        if not self._context:
+            return False
+        
+        try:
+            if page:
+                # 处理指定页面
+                handler = SliderHandler(page)
+                return handler.solve()
+            else:
+                # 检测并处理所有页面
+                pages = list(self._context.pages)
+                for p in pages:
+                    try:
+                        if p.is_closed():
+                            continue
+                        if detect_captcha_present(p):
+                            handler = SliderHandler(p)
+                            if handler.solve():
+                                return True
+                    except Exception:
+                        continue
+                return False
+        except Exception as e:
+            log.warning(f"验证码处理失败: {e}")
+            return False
+
+    def check_login_status(self) -> dict[str, Any]:
+        """检查登录状态"""
+        if not self._context:
+            return {"logged_in": False, "reason": "no_context"}
+        
+        try:
+            pages = list(self._context.pages)
+            for page in pages:
+                try:
+                    if page.is_closed():
+                        continue
+                    if detect_login_expired(page):
+                        return {
+                            "logged_in": False, 
+                            "reason": "login_expired",
+                            "url": page.url
+                        }
+                except Exception:
+                    continue
+            
+            return {"logged_in": True}
+        except Exception:
+            return {"logged_in": False, "reason": "check_failed"}
+
+    def auto_login(self, username: str | None = None, password: str | None = None) -> bool:
+        """自动登录毛子ERP
+        
+        Args:
+            username: 用户名（None则使用浏览器预填值）
+            password: 密码（None则使用浏览器预填值）
+        """
+        if not self._context:
+            return False
+        
+        pages = list(self._context.pages)
+        if not pages:
+            return False
+        
+        page = pages[0]
+        for p in pages:
+            if not p.is_closed() and detect_login_expired(p):
+                page = p
+                break
+        
+        return auto_login(page, username=username, password=password)
+
+    def handle_plugin_popup(self) -> bool:
+        """处理Ozon页面上毛子插件右下角'请登录'弹窗"""
+        if not self._context:
+            return False
+        for page in self._context.pages:
+            if page.is_closed():
+                continue
+            if 'ozon.ru' in page.url:
+                return handle_plugin_login_popup(page, self._context)
+        return False
+
+    def ensure_authenticated(self, max_retries: int = 3) -> bool:
+        """确保浏览器已认证，自动修复登录状态"""
+        if not self._context:
+            return False
+        return ensure_authenticated(self._context, max_retries=max_retries)
 
     @contextmanager
     def session(self):

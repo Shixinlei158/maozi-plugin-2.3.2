@@ -348,6 +348,14 @@ def run_seller_network(
             print("seller network stop requested: exiting before next seller")
             break
 
+        # 周期性认证检查：每处理20个卖家检查一次
+        if processed_sellers > 0 and processed_sellers % 20 == 0:
+            try:
+                if not browser.ensure_authenticated(max_retries=1):
+                    vlog("periodic auth check: recovery attempted, continuing", prefix="auth")
+            except Exception as e:
+                vlog("periodic auth check error:", e, prefix="auth")
+
         # 批量出队
         crawl_batch: list[dict[str, Any]] = []
         while queue and len(crawl_batch) < seller_page_workers and processed_sellers + len(crawl_batch) < max_sellers:
@@ -1312,6 +1320,7 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
     print_browser_runtime_notice(browser)
     retry_failed_now = args.retry_failed_now
     retry_deferred_now = args.retry_deferred_now
+    consecutive_auth_failures = 0
     while True:
         cached_items, due_items = due_seed_pool_items(
             query_key=args.query_key or None,
@@ -1350,11 +1359,34 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
                 )
             break
         except ManualInterventionRequired as exc:
-            log_line("manual action required:", exc, prefix="manual")
-            log_line(
-                "the browser window will stay open; complete the challenge to continue.",
-                prefix="manual",
-            )
+            log_line("采集需要认证恢复:", exc, prefix="auth")
+            log_line("尝试自动恢复登录...", prefix="auth")
+            
+            recovery_success = False
+            for recovery_attempt in range(3):
+                try:
+                    with browser.session():
+                        if browser.ensure_authenticated(max_retries=1):
+                            log_line("认证恢复成功，继续采集", prefix="auth")
+                            recovery_success = True
+                            consecutive_auth_failures = 0
+                            break
+                        log_line(f"认证恢复尝试 {recovery_attempt + 1}/3 未完成", prefix="auth")
+                except Exception as e:
+                    log_line(f"恢复异常: {e}", prefix="auth")
+                time.sleep(3)
+            
+            if recovery_success:
+                retry_failed_now = True
+                continue
+            
+            consecutive_auth_failures += 1
+            log_line(f"自动恢复失败 (连续失败={consecutive_auth_failures})", prefix="manual")
+            
+            if consecutive_auth_failures >= 5:
+                log_line("连续认证失败超过5次，停止采集", prefix="manual")
+                break
+            
             import sys
             if not sys.stdin.isatty():
                 time.sleep(30)
@@ -1404,7 +1436,9 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
     total_offers = 0
     round_no = 0
     consecutive_empty_rounds = 0
+    consecutive_auth_failures = 0
     MAX_EMPTY_ROUNDS = 3
+    MAX_AUTH_FAILURES = 5
     stop_event = getattr(args, "stop_event", None)
 
     while True:
@@ -1426,18 +1460,6 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
             print("expand-network complete: no more due seller pages to process")
             break
 
-        # Cloudflare / safety challenge detection before each round
-        try:
-            challenge = browser.detect_challenge()
-            if challenge.get("has_challenge"):
-                print(
-                    "⚠️⚠️⚠️ CLOUDFLARE CHALLENGE DETECTED ⚠️⚠️⚠️",
-                    f"| affected pages={challenge.get('pages')}",
-                )
-                print(">>> MANUAL ACTION REQUIRED: Complete the Cloudflare verification in your browser window.")
-        except Exception:
-            pass
-
         queue = deque(
             {
                 "url": str(item.get("home_url") or "").strip(),
@@ -1452,6 +1474,9 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
             break
         try:
             with browser.session():
+                # 认证检查：采集前确保登录有效
+                if not browser.ensure_authenticated(max_retries=2):
+                    print("认证检查未通过，将尝试继续采集")
                 stats = run_seller_network(
                     queue,
                     browser=browser,
@@ -1465,23 +1490,43 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
                     stop_event=stop_event,
                 )
         except ManualInterventionRequired as exc:
-            log_line("manual action required:", exc, prefix="manual")
-            log_line(
-                "the browser window will stay open; complete the challenge to continue.",
-                prefix="manual",
-            )
-            # In GUI/non-TTY mode, input() would hang forever. 
-            # We wait for a bit and then retry instead of blocking on stdin.
-            import sys
-            if not sys.stdin.isatty():
-                time.sleep(30)
-            else:
-                log_line("press Enter in console to continue...", prefix="manual")
+            log_line("采集需要认证恢复:", exc, prefix="auth")
+            log_line("尝试自动恢复登录...", prefix="auth")
+            
+            recovery_success = False
+            for recovery_attempt in range(3):
                 try:
-                    input()
-                except EOFError:
+                    with browser.session():
+                        if browser.ensure_authenticated(max_retries=1):
+                            log_line("认证恢复成功，继续采集", prefix="auth")
+                            recovery_success = True
+                            break
+                        log_line(f"认证恢复尝试 {recovery_attempt + 1}/3 未完成", prefix="auth")
+                except Exception as e:
+                    log_line(f"恢复异常: {e}", prefix="auth")
+                time.sleep(3)
+            
+            if recovery_success:
+                consecutive_auth_failures = 0
+                continue
+            else:
+                consecutive_auth_failures += 1
+                log_line(f"自动恢复失败 (连续失败={consecutive_auth_failures}/{MAX_AUTH_FAILURES})", prefix="manual")
+                
+                if consecutive_auth_failures >= MAX_AUTH_FAILURES:
+                    log_line("连续认证失败超过上限，停止采集", prefix="manual")
+                    break
+                
+                import sys
+                if not sys.stdin.isatty():
                     time.sleep(30)
-            continue
+                else:
+                    log_line("press Enter in console to continue...", prefix="manual")
+                    try:
+                        input()
+                    except EOFError:
+                        time.sleep(30)
+                continue
 
         round_no += 1
         total_processed += stats["processed_sellers"]
