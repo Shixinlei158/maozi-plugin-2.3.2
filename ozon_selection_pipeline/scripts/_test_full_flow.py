@@ -1,6 +1,7 @@
 import sys
 import os
-sys.path.insert(0, r'c:\project\maozi-plugin-2.3.2\ozon_selection_pipeline')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ozon_pipeline.browser_ozon import BrowserOzonClient
 from ozon_pipeline.repository import upsert_seller_home_sku
 

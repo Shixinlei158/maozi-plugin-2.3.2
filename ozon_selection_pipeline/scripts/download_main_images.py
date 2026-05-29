@@ -7,7 +7,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ozon_pipeline.db import fetch_all
 
-OUTPUT_DIR = Path(r"C:\project\maozi-plugin-2.3.2\ozon_pic")
+OUTPUT_DIR = Path(__file__).resolve().parents[1].parent / "ozon_pic"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }

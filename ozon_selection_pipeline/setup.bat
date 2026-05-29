@@ -101,7 +101,8 @@ echo   [5] 复制扩展ID，填入 .env 的 CHROME_EXTENSION_ID
 echo   [6] 用 run_gui.bat 启动采集
 echo.
 echo   命令行手动启动 Chrome (可选):
-echo   "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+echo   "%ProgramFiles%\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+echo   (如果 x64: "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe")
 echo.
 echo  ============================================================
 pause
