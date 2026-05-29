@@ -362,6 +362,12 @@ class App:
         )
         self._start_browser_btn.pack(side="left", padx=(0, 8))
 
+        self._restart_browser_btn = Button(
+            btn_frame, text="重启浏览器", bg="#e67e22", fg="white", font=("Microsoft YaHei", 10, "bold"),
+            width=12, padx=8, pady=4, command=self._restart_browser, relief="flat"
+        )
+        self._restart_browser_btn.pack(side="left", padx=(0, 8))
+
         self._start_btn = Button(
             btn_frame, text="▶ 开始采集", bg="#27ae60", fg="white", font=("Microsoft YaHei", 10, "bold"),
             width=12, padx=8, pady=4, command=self._start_collection, relief="flat"
@@ -782,6 +788,74 @@ class App:
                 self._append_log(f"启动浏览器失败: {exc}\n")
         threading.Thread(target=run, daemon=True).start()
 
+    def _restart_browser(self):
+        import subprocess, time as _time
+        port = str(settings.chrome_remote_debugging_port)
+        self._append_log(f"===== 正在重启 Chrome (端口 {port}) =====\n")
+        def run():
+            try:
+                # 1. 杀掉监听端口的 Chrome 进程
+                killed = 0
+                try:
+                    result = subprocess.run(
+                        f'netstat -ano | findstr ":{port}" | findstr "LISTENING"',
+                        shell=True, capture_output=True, text=True, timeout=5
+                    )
+                    for line in result.stdout.strip().split("\n"):
+                        parts = line.split()
+                        if len(parts) >= 5:
+                            pid = parts[-1]
+                            try:
+                                subprocess.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True, timeout=5)
+                                killed += 1
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                self._append_log(f"已终止 {killed} 个旧 Chrome 进程\n")
+                if killed > 0:
+                    _time.sleep(2)
+
+                # 2. 重启 Chrome
+                self._append_log("正在启动 Chrome (带毛子插件)...\n")
+                from .cli import build_browser_client
+                args = Namespace(
+                    profile_dir=str(settings.chrome_profile_dir),
+                    extension_dir=str(settings.chrome_extension_dir),
+                    chrome_exe=settings.chrome_executable_path or None,
+                    channel=settings.chrome_channel,
+                    proxy_server=settings.chrome_proxy_server or None,
+                    cdp_url=None,
+                    remote_debugging_port=int(port),
+                    headless=False
+                )
+                client = build_browser_client(args)
+                client.launch_real_chrome()
+
+                # 3. 等待 Chrome 就绪
+                for _ in range(15):
+                    _time.sleep(1)
+                    try:
+                        import requests
+                        r = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=2)
+                        if r.status_code == 200:
+                            self._append_log(f"Chrome 已就绪 (端口 {port})\n")
+                            # 检查扩展
+                            r2 = requests.get(f"http://127.0.0.1:{port}/json", timeout=2)
+                            pages = r2.json()
+                            ext = [p for p in pages if "chrome-extension://" in p.get("url", "")]
+                            if ext:
+                                self._append_log(f"毛子插件已加载 OK\n")
+                            else:
+                                self._append_log("提示: 未检测到插件页面, 请确认插件已加载\n")
+                            return
+                    except Exception:
+                        pass
+                self._append_log("警告: Chrome 启动后未能确认就绪, 请手动检查\n")
+            except Exception as exc:
+                self._append_log(f"重启浏览器失败: {exc}\n")
+        threading.Thread(target=run, daemon=True).start()
+
     def _start_collection(self):
         if self._worker_thread and self._worker_thread.is_alive():
             messagebox.showwarning("提示", "采集已在运行中")
@@ -820,6 +894,8 @@ class App:
         self._stop_flag.clear()
         self._start_btn.config(state="disabled", bg="#7f8c8d")
         self._stop_btn.config(state="normal", bg="#e74c3c")
+        self._start_browser_btn.config(state="disabled", bg="#7f8c8d")
+        self._restart_browser_btn.config(state="disabled", bg="#7f8c8d")
         self._clear_log()
         self._logger = _GuiSummaryLogger(self._log_queue)
         self._runtime_stats["mode"] = mode
@@ -919,6 +995,8 @@ class App:
         self._sync_runtime_labels()
         self._start_btn.config(state="normal", bg="#27ae60")
         self._stop_btn.config(state="disabled", bg="#7f8c8d")
+        self._start_browser_btn.config(state="normal", bg="#3498db")
+        self._restart_browser_btn.config(state="normal", bg="#e67e22")
         self._stop_flag.clear()
         self._worker_thread = None
 
