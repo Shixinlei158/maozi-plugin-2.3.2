@@ -1145,32 +1145,57 @@ class BrowserOzonClient:
         skus: list[str],
         concurrency: int,
     ) -> dict[str, dict[str, Any]]:
-        # 首次调用时导航到 ext popup 取 token 并缓存，后续批次复用
+        # 首次调用时取 token 并缓存，后续批次复用
         if self._cached_maozi_token is None:
-            target_url = self._extension_popup_url()
+            # Path 1: 尝试 extension popup (chrome.storage.local)
+            token = None
             try:
-                current = page.url or ""
-            except Exception:
-                current = ""
-            if current != target_url:
-                page.goto(target_url, wait_until="load", timeout=15000)
-                page.wait_for_timeout(800)
+                target_url = self._extension_popup_url()
+                try:
+                    current = page.url or ""
+                except Exception:
+                    current = ""
+                if current != target_url:
+                    page.goto(target_url, wait_until="load", timeout=15000)
+                    page.wait_for_timeout(800)
 
-            token_result = page.evaluate("""
-                async () => {
-                    let token = null;
-                    for (let i = 0; i < 8 && !token; i++) {
-                        if (i > 0) await new Promise(r => setTimeout(r, 500));
-                        try {
-                            const s = await chrome.storage.local.get(["maozierp-token"]);
-                            token = s["maozierp-token"];
-                        } catch(e) {}
+                token_result = page.evaluate("""
+                    async () => {
+                        let token = null;
+                        for (let i = 0; i < 8 && !token; i++) {
+                            if (i > 0) await new Promise(r => setTimeout(r, 500));
+                            try {
+                                const s = await chrome.storage.local.get(["maozierp-token"]);
+                                token = s["maozierp-token"];
+                            } catch(e) {}
+                        }
+                        return token || null;
                     }
-                    return token || null;
-                }
-            """)
-            if token_result:
-                self._cached_maozi_token = token_result
+                """)
+                if token_result:
+                    token = token_result
+            except Exception:
+                pass
+
+            # Path 2: 降级到 Maozi 网页 (localStorage)
+            if not token:
+                try:
+                    self._ensure_maozi_selection_ready(page)
+                    token_result = page.evaluate("""
+                        () => {
+                            try {
+                                const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
+                                return access.accessToken || null;
+                            } catch(e) { return null; }
+                        }
+                    """)
+                    if token_result:
+                        token = token_result
+                except Exception:
+                    pass
+
+            if token:
+                self._cached_maozi_token = token
             else:
                 return {}
 
