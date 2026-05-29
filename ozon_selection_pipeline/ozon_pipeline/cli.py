@@ -2266,7 +2266,15 @@ def process_sku(
         if not non_offer_reasons:
             if batch_only_mode:
                 if settings.seller_fast_mode:
-                    if settings.seller_fast_fetch_candidate_offers:
+                    # 先评估其他规则是否已通过（忽略跟卖人数）
+                    preview_without_offers = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
+                    other_reasons = [r for r in preview_without_offers.reasons if r != "跟卖人数缺失"]
+                    if other_reasons:
+                        vlog("sku batch-only fast mode skipped offers (other rules failed):", f"sku={sku}", f"reasons={other_reasons}", prefix="sku")
+                        preview_rule = preview_without_offers
+                        non_offer_reasons = other_reasons
+                    else:
+                        # 其他规则都通过了，抓取跟卖列表以完成最终判定
                         try:
                             with _OFFER_FETCH_LOCK:
                                 offers = load_seller_offers(sku, browser)
@@ -2277,11 +2285,9 @@ def process_sku(
                         except Exception as exc:
                             offers = None
                             offer_fetch_error = exc
+                            preview_rule = preview_without_offers
+                            non_offer_reasons = other_reasons
                             vlog("sku batch-only fast candidate offers fetch failed:", f"sku={sku}", exc, prefix="sku")
-                    else:
-                        vlog("sku batch-only fast mode skipped offers fallback:", f"sku={sku}", prefix="sku")
-                        preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
-                        non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
                 else:
                     # Batch mode: skip expensive load_seller_offers but try plugin_card as lightweight fallback
                     vlog("sku batch-only trying plugin fallback for offers:", f"sku={sku}", prefix="sku")
