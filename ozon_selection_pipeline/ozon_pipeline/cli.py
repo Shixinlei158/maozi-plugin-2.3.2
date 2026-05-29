@@ -735,12 +735,28 @@ def run_seller_network(
                 f"seller={url}",
                 f"rows={len(seller_results)}",
             )
-            bulk_upsert_sku_results(seller_results, source=f"seller_home:{url}")
+            write_summary = bulk_upsert_sku_results(seller_results, source=f"seller_home:{url}")
             db_write_elapsed = time.perf_counter() - db_write_start
             print(
                 "phase: bulk write results:",
                 f"seller={url}",
-                f"rows={len(seller_results)}",
+                f"total={write_summary['total']}",
+                f"metrics={write_summary['metrics']}",
+                f"products={write_summary['products']}",
+                f"universe={write_summary['universe']}",
+                f"elapsed={db_write_elapsed:.1f}s",
+            )
+            bulk_upsert_sku_results(seller_results, source=f"seller_home:{url}")
+            db_write_elapsed = time.perf_counter() - db_write_start
+            write_summary = bulk_upsert_sku_results(seller_results, source=f"seller_home:{url}")
+            db_write_elapsed = time.perf_counter() - db_write_start
+            print(
+                "phase: bulk write results:",
+                f"seller={url}",
+                f"rows={write_summary['total']}",
+                f"metrics={write_summary['metrics']}",
+                f"products={write_summary['products']}",
+                f"universe={write_summary['universe']}",
                 f"elapsed={db_write_elapsed:.1f}s",
             )
             cleanup_deleted = cleanup_processed_seller_home_skus(url)

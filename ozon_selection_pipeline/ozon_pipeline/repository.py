@@ -584,10 +584,10 @@ def bulk_upsert_sku_results(
     results: list[dict[str, Any]],
     *,
     source: str,
-) -> None:
-    """批量更新 SKU 处理结果，包括指标、产品快照和种子表状态。"""
+) -> dict[str, int]:
+    """批量更新 SKU 处理结果。返回各表写入行数。"""
     if not results:
-        return
+        return {"total": 0, "metrics": 0, "products": 0, "seeds": 0, "universe": 0}
 
     metric_rows = []
     product_rows = []
@@ -722,6 +722,14 @@ def bulk_upsert_sku_results(
     if universe_entries:
         # 这里需要一个新的 bulk 函数来处理完整的 universe 更新
         bulk_upsert_sku_universe_full(universe_entries)
+
+    return {
+        "total": len(results),
+        "metrics": len(metric_rows),
+        "products": len(product_rows),
+        "seeds": len(seed_status_rows),
+        "universe": len(universe_entries),
+    }
 
 
 def bulk_upsert_sku_universe_full(entries: list[dict[str, Any]]) -> None:
