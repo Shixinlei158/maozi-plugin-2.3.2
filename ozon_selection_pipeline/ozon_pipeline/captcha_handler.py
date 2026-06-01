@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import random
 import time
+from datetime import datetime
 from typing import Any
 
 import logging
@@ -625,3 +626,67 @@ def _close_extra_dashboard_pages(context: Any) -> None:
             page.close()
         except Exception:
             pass
+
+
+def unified_login_recovery(context: Any, browser_client=None) -> bool:
+    """统一登录恢复：依次尝试所有方法，失败则飞书通知。
+    
+    方法优先级：
+    1. ensure_authenticated（扫描所有页面的登录/弹窗）
+    2. 打开新登录页 → auto_login（滑块登录）
+    3. 全部失败 → 飞书告警
+    
+    Returns:
+        bool: True 如果任何方法成功
+    """
+    import os
+
+    print("[auth] 开始统一登录恢复...")
+
+    # 方法1: ensure_authenticated（处理已有登录页和插件弹窗）
+    print("[auth] 方法1: 扫描现有页面...")
+    ok = ensure_authenticated(context, max_retries=2)
+    if ok:
+        print("[auth] 方法1成功")
+        return True
+
+    # 方法2: 主动打开新登录页完成滑块登录
+    print("[auth] 方法2: 主动打开登录页...")
+    try:
+        username = os.environ.get("MAOZI_USERNAME") or None
+        password = os.environ.get("MAOZI_PASSWORD") or None
+        login_page = context.new_page()
+        ok = auto_login(login_page, username=username, password=password)
+        if ok:
+            print("[auth] 方法2成功")
+            # 登录后再点一下插件弹窗（"登录成功后再点击请登录"）
+            for page in context.pages:
+                if page.is_closed():
+                    continue
+                if 'ozon.ru' in (page.url or ''):
+                    handle_plugin_login_popup(page, context)
+            return True
+        try:
+            login_page.close()
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[auth] 方法2异常: {e}")
+
+    # 全部失败 → 飞书告警
+    print("[auth] 所有登录恢复方法均失败，发送飞书通知...")
+    try:
+        from .feishu import send_notification
+        send_notification(
+            title="毛子ERP登录恢复失败",
+            fields=[
+                {"label": "状态", "value": "自动恢复已用尽所有方法，需要人工介入"},
+                {"label": "操作", "value": "请手动打开 https://ozon.maozierp.com 完成登录和插件弹窗"},
+                {"label": "时间", "value": str(datetime.now())},
+            ],
+            severity="error",
+        )
+    except Exception:
+        pass
+
+    return False
