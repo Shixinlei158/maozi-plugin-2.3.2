@@ -6,6 +6,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from threading import Lock, local
 from typing import Any
@@ -50,6 +51,7 @@ from .repository import (
     upsert_sku_universe,
 )
 from .rules import TOP_LIST_SEED_RULE, evaluate_selection_rule, evaluate_top_list_prefilter
+from .util import seller_key
 
 _VERBOSE = False
 _OFFER_FETCH_LOCK = Lock()
@@ -294,10 +296,27 @@ _PRICE_MIN_CNY = Decimal("20")
 _PRICE_MAX_CNY = Decimal("800")
 _RUB_RATE = Decimal(str(settings.rub_to_cny_rate))
 
+_KNOWN_BRANDS = {
+    "adidas", "nike", "puma", "reebok", "new balance", "samsung", "apple", "xiaomi",
+    "huawei", "sony", "lg", "panasonic", "philips", "bosch", "siemens", "dyson",
+    "kitchenaid", "tefal", "asus", "lenovo", "hp", "dell", "canon", "nikon",
+    "lego", "barbie", "fisher-price", "hasbro", "mattel", "zara", "h&m", "uniqlo",
+    "gucci", "prada", "chanel", "louis vuitton", "hermes", "dior", "versace",
+    "armani", "hugo boss", "calvin klein", "tommy hilfiger", "ralph lauren",
+    "under armour", "columbia", "the north face", "patagonia", "levi's", "levis",
+    "wrangler", "gap", "old navy", "converse", "vans", "skechers", "crocs",
+    "timberland", "dr martens", "birkenstock", "ugg", "clarks", "ecco",
+    "logitech", "razer", "corsair", "hyperx", "steelseries", "jbl", "bose",
+    "beats", "marshall", "sennheiser", "beyerdynamic", "akg", "shure",
+    "gillette", "braun", "oral-b", "colgate", "nivea", "l'oreal", "maybelline",
+    "este lauder", "clinique", "lancome", "shiseido", "sk-ii", "kiehl's",
+    "ikea", "muji", "staub", "le creuset", "zwilling", "wusthof", "victorinox",
+    "yandex", "ozon", "wildberries", "detmir", "detsky mir",
+}
+
 
 def _seller_item_passes_prefilter(item: dict[str, Any]) -> bool:
     """卖家主页商品廉价预筛：在SKU3获取前先行过滤"""
-    # 价格预筛：过滤明显超出DEFAULT_SELECTION_RULE范围的商品
     price = item.get("price_amount")
     currency = (item.get("currency") or "").strip().upper()
     if price is not None:
@@ -314,6 +333,24 @@ def _seller_item_passes_prefilter(item: dict[str, Any]) -> bool:
         except Exception:
             pass
     return True
+
+
+def _seller_looks_branded(items: list[dict[str, Any]], sample_size: int = 20) -> bool:
+    """检查卖家前N个商品是否全部含品牌 → 判定为品牌卖家"""
+    if not items:
+        return False
+    sample = items[:sample_size]
+    unbranded_count = 0
+    for it in sample:
+        title = (it.get("title") or "").lower()
+        # 标题中包含已知品牌 → 有品牌
+        has_known_brand = any(brand in title for brand in _KNOWN_BRANDS)
+        if has_known_brand:
+            continue
+        # 标题短且无明显品牌特征 → 可能无品牌
+        unbranded_count += 1
+    # 所有样本都有品牌 → 品牌卖家
+    return unbranded_count == 0
 
 
 def run_seller_network(
@@ -475,6 +512,18 @@ def run_seller_network(
             items = [it for it in items if _seller_item_passes_prefilter(it)]
             if raw_count != len(items):
                 print(f"  prefilter: {raw_count}→{len(items)} (过滤{raw_count - len(items)}条)")
+            # 品牌卖家检测：前N个商品全部有品牌 → 永久冻结卖家
+            if items and _seller_looks_branded(items):
+                print(f"  skip branded seller: {url[:80]} | name={name or '?'} | 全部品牌商品")
+                # 永久冻结：设置next_collect_after为2099年
+                from .repository import upsert_seller_shop as _upsert_shop
+                _upsert_shop(url, name=name)
+                db.execute(
+                    "UPDATE seller_shops SET next_collect_after='2099-12-31 23:59:59' WHERE seller_key=%(key)s",
+                    {"key": seller_key(url)},
+                )
+                processed_sellers += 1
+                continue
             source = result.get("source") or "unknown"
             vlog(
                 "seller page detail:",
