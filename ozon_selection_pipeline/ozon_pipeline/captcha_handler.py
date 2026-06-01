@@ -69,9 +69,10 @@ class SliderHandler:
         try:
             text = self.page.evaluate("""() => {
                 const s = document.querySelector('.vben-spine-text');
-                return s ? s.innerText : '';
+                if (!s) return '__ELEMENT_GONE__';
+                return s.innerText || '';
             }""")
-            return text == '验证通过'
+            return text == '验证通过' or text == '__ELEMENT_GONE__'
         except Exception:
             return False
     
@@ -134,12 +135,21 @@ class SliderHandler:
     
     def _check_result(self) -> bool:
         try:
-            text = self.page.evaluate("""() => {
-                const s = document.querySelector('.vben-spine-text');
-                return s ? s.innerText : '';
-            }""")
-            log.debug(f"滑块文本: {text}")
-            return text == '验证通过'
+            # 等待更长时间，多次检查
+            for _ in range(8):
+                time.sleep(0.5)
+                text = self.page.evaluate("""() => {
+                    const s = document.querySelector('.vben-spine-text');
+                    if (!s) return '__ELEMENT_GONE__';
+                    return s.innerText || '';
+                }""")
+                if text == '验证通过':
+                    return True
+                # 元素消失=滑块已完成且页面已变化，等同于通过
+                if text == '__ELEMENT_GONE__':
+                    log.debug("滑块元素已消失，视为验证通过")
+                    return True
+            return False
         except Exception as e:
             log.debug(f"检查结果失败: {e}")
             return False
@@ -276,8 +286,26 @@ def auto_login(
             
             # 5. 拖动滑块
             handler = SliderHandler(page)
-            if not handler.solve(max_retries=2):
-                log.warning("滑块验证失败")
+            slider_ok = handler.solve(max_retries=2)
+            if not slider_ok:
+                log.warning("滑块验证未确认通过，检查是否已自动登录...")
+                # 滑块可能实际已通过，检查登录状态
+                page.wait_for_timeout(2000)
+                current_url = page.url
+                title = page.title()
+                if '/login' not in current_url and '登录' not in title:
+                    log.info("滑块后已自动跳转，视为登录成功")
+                    return True
+                token_check = page.evaluate(
+                    """() => {
+                      const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
+                      return !!access.accessToken;
+                    }"""
+                )
+                if token_check:
+                    log.info("滑块后Token已存在，视为登录成功")
+                    return True
+                log.warning("滑块未完成，重试...")
                 continue
             
             # 6. 点击登录
@@ -286,13 +314,32 @@ def auto_login(
             if login_btn:
                 login_btn.click()
             
-            # 7. 等待页面跳转
-            page.wait_for_timeout(5000)
+            # 7. 等待页面跳转（SPA hash路由可能较慢，轮询等待）
+            for check_i in range(20):
+                page.wait_for_timeout(1000)
+                current_url = page.url
+                title = page.title()
+                # 检查是否已经跳离登录页
+                if '/login' not in current_url and '登录' not in title:
+                    log.info("登录成功（URL已跳离登录页）")
+                    return True
+                # 或者 localStorage 已有有效 token
+                token_check = page.evaluate(
+                    """() => {
+                      const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
+                      return !!access.accessToken;
+                    }"""
+                )
+                if token_check:
+                    log.info("登录成功（Token已写入localStorage）")
+                    return True
+                if check_i > 4:
+                    log.debug(f"等待登录跳转... URL={current_url} title={title}")
             
             # 8. 检查登录结果
+            body = page.evaluate("() => document.body?.innerText?.slice(0, 500) || ''")
             current_url = page.url
             title = page.title()
-            body = page.evaluate("() => document.body?.innerText?.slice(0, 500) || ''")
             
             if '/login' not in current_url and '登录' not in title:
                 log.info("登录成功")
@@ -489,23 +536,32 @@ def ensure_authenticated(context: Any, max_retries: int = 3) -> bool:
                 
                 url = page.url or ''
                 
-                # 情况1：登录页需要滑块
+                 # 情况1：登录页需要滑块
                 if '/auth/login' in url:
-                    spine_text = page.evaluate("() => document.querySelector('.vben-spine-text')?.innerText || ''")
-                    if '请按住滑块拖动' in spine_text or '验证通过' in spine_text:
-                        log.info(f"检测到登录页需要处理 (尝试 {attempt + 1})")
-                        page.bring_to_front()
-                        page.wait_for_timeout(1000)
-                        success = auto_login(page)
-                        if success:
-                            log.info("登录页登录成功")
+                    log.info(f"检测到登录页需要处理 (尝试 {attempt + 1})")
+                    page.bring_to_front()
+                    page.wait_for_timeout(1000)
+                    success = auto_login(page)
+                    if success:
+                        log.info("登录页登录成功，等待页面跳转...")
+                        # 等待SPA完成跳转（最多10秒）
+                        for _ in range(10):
                             page.wait_for_timeout(1000)
-                            # 登录成功后关闭dashboard页面
-                            _close_extra_dashboard_pages(context)
-                        else:
-                            log.warning("登录页自动登录失败")
-                        needs_recovery = True
-                        break
+                            if '/auth/login' not in (page.url or ''):
+                                break
+                        # 关闭残留登录页
+                        try:
+                            if '/auth/login' in (page.url or ''):
+                                page.goto("https://ozon.maozierp.com/#/dashboard", wait_until="domcontentloaded", timeout=15000)
+                        except Exception:
+                            pass
+                        _close_extra_dashboard_pages(context)
+                        log.info("认证已恢复")
+                        return True
+                    else:
+                        log.warning("登录页自动登录失败")
+                    needs_recovery = True
+                    break
                 
                 # 情况2：Ozon页面有插件弹窗
                 if 'ozon.ru' in url:

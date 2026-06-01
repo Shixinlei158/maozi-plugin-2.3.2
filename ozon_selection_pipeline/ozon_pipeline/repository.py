@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from . import db
 from .config import settings
+from .seed_categories import ensure_categories_from_top_list
 from .ozon_frontend import parse_seller_home_tile
 from .rules import TOP_LIST_SEED_RULE, ProductSelectionResult, evaluate_selection_rule, price_to_cny
 from .util import (
@@ -621,8 +623,9 @@ def bulk_upsert_sku_results(
             m_row["collected_at"] = now
             metric_rows.append(m_row)
         
-        # 2. 准备产品快照行
-        if metric:
+        # 2. 准备产品快照行 — 仅合格SKU写入
+        is_qualified = selection_result and selection_result.matched
+        if metric and is_qualified:
             p_row: dict[str, Any] = {
                 "sku": sku,
                 "variant_id": metric.get("variant_id"),
@@ -718,6 +721,14 @@ def bulk_upsert_sku_results(
             """,
             seed_status_rows
         )
+
+    if seed_status_rows and source.startswith("seller_home:"):
+        for row in seed_status_rows:
+            mark_seed_status(
+                row["sku"],
+                status=row["status"],
+                reason=row["reason"][:512] if row.get("reason") else None,
+            )
     
     if universe_entries:
         # 这里需要一个新的 bulk 函数来处理完整的 universe 更新
@@ -1113,11 +1124,134 @@ def get_recent_top_list_run(query_key: str, within_hours: int) -> dict[str, Any]
     )
 
 
+def bulk_upsert_top_list_page(
+    query_key: str, run_id: int, page_no: int, items: list[dict[str, Any]]
+) -> int:
+    """批量写入整页榜单数据到 top_list_skus 和 seed_pool_skus，减少远程DB往返"""
+    if not items:
+        return 0
+    t0 = time.perf_counter()
+    top_list_rows = []
+    seed_pool_rows = []
+    category_rows: list[dict[str, Any]] = []
+    seen_categories: set[int] = set()
+    for index, item in enumerate(items, start=1):
+        params = top_list_item_params(query_key, run_id, page_no, index, item)
+        sku = str(params.get("sku") or "")
+        if not sku:
+            continue
+        top_list_rows.append(params)
+        seed_pool_rows.append(params)
+        # 收集类目数据(去重后批量写入)
+        for c_id, c_name_zh, c_name_en, c_parent, c_level in [
+            (item.get("cate1_id"), item.get("cate1") or "", item.get("category1") or "", 0, 1),
+            (item.get("cate2_id"), item.get("cate2") or "", item.get("category2") or "", item.get("cate1_id") or 0, 2),
+            (item.get("cate3_id"), item.get("cate3") or "", item.get("category3") or "", item.get("cate2_id") or 0, 3),
+        ]:
+            if c_id and int(c_id) not in seen_categories:
+                seen_categories.add(int(c_id))
+                category_rows.append({
+                    "category_id": int(c_id),
+                    "name_zh": c_name_zh or "",
+                    "name_en": c_name_en or "",
+                    "parent_id": int(c_parent) if c_parent else 0,
+                    "level": c_level,
+                })
+    t_prep = time.perf_counter()
+    if category_rows:
+        db.execute_insert_many(
+            "INSERT INTO ozon_categories (category_id, name_zh, name_en, parent_id, level) "
+            "VALUES (%(category_id)s, %(name_zh)s, %(name_en)s, %(parent_id)s, %(level)s) "
+            "ON DUPLICATE KEY UPDATE "
+            "name_zh=IF(VALUES(name_zh)!='',VALUES(name_zh),name_zh), "
+            "name_en=IF(VALUES(name_en)!='',VALUES(name_en),name_en), "
+            "parent_id=IF(VALUES(parent_id)!=0,VALUES(parent_id),parent_id)",
+            category_rows,
+            batch_size=200,
+        )
+    t_cat = time.perf_counter()
+    if top_list_rows:
+        db.execute_insert_many(
+            """
+            INSERT INTO top_list_skus
+              (query_key, run_id, sku, page_no, page_rank, name, brand, link, photo,
+               cate1, cate2, cate3, sold_count, sold_sum, avg_price, sales_dynamics,
+               conv_to_cart_pdp, conv_to_cart_search, conv_view_to_order, qty_view_pdp,
+               views, avg_delivery_days, volume, weight, seller_id, sales_schema,
+               is_china, blocked_by_seller, nullable_create_date, upstream_update_time,
+               snapshot_hash, raw_json, last_seen_at)
+            VALUES
+              (%(query_key)s, %(run_id)s, %(sku)s, %(page_no)s, %(page_rank)s, %(name)s, %(brand)s, %(link)s, %(photo)s,
+               %(cate1)s, %(cate2)s, %(cate3)s, %(sold_count)s, %(sold_sum)s, %(avg_price)s, %(sales_dynamics)s,
+               %(conv_to_cart_pdp)s, %(conv_to_cart_search)s, %(conv_view_to_order)s, %(qty_view_pdp)s,
+               %(views)s, %(avg_delivery_days)s, %(volume)s, %(weight)s, %(seller_id)s, %(sales_schema)s,
+               %(is_china)s, %(blocked_by_seller)s, %(nullable_create_date)s, %(upstream_update_time)s,
+               %(snapshot_hash)s, %(raw_json)s, CURRENT_TIMESTAMP)
+            ON DUPLICATE KEY UPDATE
+              run_id=VALUES(run_id), page_no=VALUES(page_no), page_rank=VALUES(page_rank),
+              name=VALUES(name), brand=VALUES(brand), link=VALUES(link), photo=VALUES(photo),
+              cate1=VALUES(cate1), cate2=VALUES(cate2), cate3=VALUES(cate3),
+              sold_count=VALUES(sold_count), sold_sum=VALUES(sold_sum), avg_price=VALUES(avg_price),
+              sales_dynamics=VALUES(sales_dynamics), conv_to_cart_pdp=VALUES(conv_to_cart_pdp),
+              conv_to_cart_search=VALUES(conv_to_cart_search), conv_view_to_order=VALUES(conv_view_to_order),
+              qty_view_pdp=VALUES(qty_view_pdp), views=VALUES(views),
+              avg_delivery_days=VALUES(avg_delivery_days), volume=VALUES(volume), weight=VALUES(weight),
+              seller_id=VALUES(seller_id), sales_schema=VALUES(sales_schema),
+              is_china=VALUES(is_china), blocked_by_seller=VALUES(blocked_by_seller),
+              nullable_create_date=VALUES(nullable_create_date), upstream_update_time=VALUES(upstream_update_time),
+              snapshot_hash=VALUES(snapshot_hash), raw_json=VALUES(raw_json), last_seen_at=CURRENT_TIMESTAMP
+            """,
+            top_list_rows,
+            batch_size=200,
+        )
+    t_top = time.perf_counter()
+    if seed_pool_rows:
+        db.execute_insert_many(
+            """
+            INSERT INTO seed_pool_skus
+              (source_type, query_key, source_run_id, sku, page_no, page_rank, name, brand, link, photo,
+               cate1, cate2, cate3, sold_count, sold_sum, avg_price, sales_dynamics,
+               conv_to_cart_pdp, conv_to_cart_search, conv_view_to_order, qty_view_pdp,
+               views, avg_delivery_days, volume, weight, seller_id, sales_schema,
+               is_china, blocked_by_seller, nullable_create_date, upstream_update_time,
+               snapshot_hash, raw_json, last_seen_at)
+            VALUES
+              ('top_list', %(query_key)s, %(run_id)s, %(sku)s, %(page_no)s, %(page_rank)s, %(name)s, %(brand)s, %(link)s, %(photo)s,
+               %(cate1)s, %(cate2)s, %(cate3)s, %(sold_count)s, %(sold_sum)s, %(avg_price)s, %(sales_dynamics)s,
+               %(conv_to_cart_pdp)s, %(conv_to_cart_search)s, %(conv_view_to_order)s, %(qty_view_pdp)s,
+               %(views)s, %(avg_delivery_days)s, %(volume)s, %(weight)s, %(seller_id)s, %(sales_schema)s,
+               %(is_china)s, %(blocked_by_seller)s, %(nullable_create_date)s, %(upstream_update_time)s,
+               %(snapshot_hash)s, %(raw_json)s, CURRENT_TIMESTAMP)
+            ON DUPLICATE KEY UPDATE
+              source_run_id=VALUES(source_run_id), page_no=VALUES(page_no), page_rank=VALUES(page_rank),
+              name=VALUES(name), brand=VALUES(brand), link=VALUES(link), photo=VALUES(photo),
+              cate1=VALUES(cate1), cate2=VALUES(cate2), cate3=VALUES(cate3),
+              sold_count=VALUES(sold_count), sold_sum=VALUES(sold_sum), avg_price=VALUES(avg_price),
+              sales_dynamics=VALUES(sales_dynamics), conv_to_cart_pdp=VALUES(conv_to_cart_pdp),
+              conv_to_cart_search=VALUES(conv_to_cart_search), conv_view_to_order=VALUES(conv_view_to_order),
+              qty_view_pdp=VALUES(qty_view_pdp), views=VALUES(views),
+              avg_delivery_days=VALUES(avg_delivery_days), volume=VALUES(volume), weight=VALUES(weight),
+              seller_id=VALUES(seller_id), sales_schema=VALUES(sales_schema),
+              is_china=VALUES(is_china), blocked_by_seller=VALUES(blocked_by_seller),
+              nullable_create_date=VALUES(nullable_create_date), upstream_update_time=VALUES(upstream_update_time),
+              snapshot_hash=VALUES(snapshot_hash), raw_json=VALUES(raw_json), last_seen_at=CURRENT_TIMESTAMP
+            """,
+            seed_pool_rows,
+            batch_size=200,
+        )
+    t_seed = time.perf_counter()
+    total = t_seed - t0
+    if total > 5:
+        print(f"  bulk-db: prep={t_prep-t0:.1f}s cat={t_cat-t_prep:.1f}s top={t_top-t_cat:.1f}s seed={t_seed-t_top:.1f}s total={total:.1f}s")
+    return len(top_list_rows)
+
+
 def upsert_top_list_item(query_key: str, run_id: int, page_no: int, page_rank: int, item: dict[str, Any]) -> str:
     params = top_list_item_params(query_key, run_id, page_no, page_rank, item)
     sku = str(params.get("sku") or "")
     if not sku:
         return ""
+    ensure_categories_from_top_list(item)
     db.execute(
         """
         INSERT INTO top_list_skus

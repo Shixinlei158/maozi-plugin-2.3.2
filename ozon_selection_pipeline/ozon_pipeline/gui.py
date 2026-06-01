@@ -15,6 +15,7 @@ from typing import Any
 
 from .browser_ozon import BrowserOzonClient
 from .config import settings, ROOT_DIR
+from .feishu import notify_collection_failed
 
 GUI_CONFIG_FILE = ROOT_DIR / "gui_config.json"
 GUI_FIRST_RUN_FILE = ROOT_DIR / ".gui_first_run"
@@ -340,17 +341,84 @@ class App:
         self._add_param(lf_seed, 1, 0, "种子来源过滤", "source_type", "top_list", "str",
                        tooltip="过滤特定来源的种子。可选：top_list, manual")
 
-        # 榜单组
-        lf_top = tk.LabelFrame(tab_adv, text="榜单采集专属配置", bg="#ffffff", padx=8, pady=8)
+        # 榜单组 — 按毛子ERP实际页面字段顺序排列
+        lf_top = tk.LabelFrame(tab_adv, text="榜单采集专属配置（留空=不过滤，顺序与网页一致）", bg="#ffffff", padx=8, pady=8)
         lf_top.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
-        self._add_param(lf_top, 0, 0, "榜单类型 (main_type)", "main_type", "hot", "str",
-                       tooltip="毛子榜单分类。可选：hot, new, potential")
-        self._add_param(lf_top, 0, 1, "每页数量 (page_size)", "page_size", "50", "int", min_val=1, max_val=100,
-                       tooltip="榜单单页请求条数。示例：50")
-        self._add_param(lf_top, 1, 0, "起始页码 (page_from)", "page_from", "1", "int", min_val=1, max_val=1000,
-                       tooltip="从第几页开始采集。示例：1")
-        self._add_param(lf_top, 1, 1, "结束页码 (page_to)", "page_to", "10", "int", min_val=1, max_val=1000,
-                       tooltip="采集到第几页停止。示例：10")
+
+        def _add_section_label(parent, row, text):
+            lbl = Label(parent, text=text, bg="#ffffff", font=("Microsoft YaHei", 9, "bold"), fg="#3498db")
+            lbl.grid(row=row, column=0, columnspan=3, sticky="w", padx=10, pady=(8, 2))
+
+        _add_section_label(lf_top, 0, "基础设置")
+        self._add_param(lf_top, 1, 0, "榜单类型", "main_type", "hot", "str",
+                       tooltip="毛子榜单分类：hot(热销), new(新品), potential(潜力)")
+        self._add_param(lf_top, 1, 1, "每页数量", "page_size", "50", "int", min_val=1, max_val=100,
+                       tooltip="榜单单页请求条数")
+        self._add_param(lf_top, 1, 2, "起始页码", "page_from", "1", "int", min_val=1, max_val=1000,
+                       tooltip="从第几页开始采集")
+        self._add_param(lf_top, 2, 0, "结束页码", "page_to", "100", "int", min_val=1, max_val=1000,
+                       tooltip="采集到第几页停止")
+        self._add_param(lf_top, 2, 1, "类目1", "category1", "", "str",
+                       tooltip="一级类目名称或ID")
+        self._add_param(lf_top, 2, 2, "类目2", "category2", "", "str",
+                       tooltip="二级类目名称或ID")
+        self._add_param(lf_top, 3, 0, "类目3", "category3", "", "str",
+                       tooltip="三级类目名称或ID")
+
+        # 榜单过滤 — 完全按网页顺序：商品名称 → SKU → 月销量 → 日均销量 → 均价 → 月销售额环比 → 月销售额 → 商品卡加购率 → 搜索加购率 → 发货模式 → 重量 → 交货时间 → 上架时间
+        _add_section_label(lf_top, 4, "榜单过滤（按网页顺序）")
+        self._add_param(lf_top, 5, 0, "商品名称", "name", "", "str",
+                       tooltip="按商品名称模糊搜索")
+        self._add_param(lf_top, 5, 1, "SKU", "sku", "", "str",
+                       tooltip="按SKU编号精确搜索")
+        self._add_param(lf_top, 5, 2, "月销量≥", "sales_min", "3", "str",
+                       tooltip="月销量最小值。默认：3")
+        self._add_param(lf_top, 6, 0, "月销量≤", "sales_max", "65", "str",
+                       tooltip="月销量最大值。默认：65")
+        self._add_param(lf_top, 6, 1, "日均销量≥", "day_sales_min", "", "str",
+                       tooltip="日均销量最小值")
+        self._add_param(lf_top, 6, 2, "日均销量≤", "day_sales_max", "", "str",
+                       tooltip="日均销量最大值")
+        self._add_param(lf_top, 7, 0, "均价≥(₽)", "avg_price_min", "500", "str",
+                       tooltip="平均价格最小值(卢布)。默认：500")
+        self._add_param(lf_top, 7, 1, "均价≤(₽)", "avg_price_max", "10000", "str",
+                       tooltip="平均价格最大值(卢布)。默认：10000")
+        self._add_param(lf_top, 7, 2, "月销售额环比≥(%)", "sales_dynamics_min", "", "str",
+                       tooltip="月度销售额环比最小值(百分比)")
+        self._add_param(lf_top, 8, 0, "月销售额环比≤(%)", "sales_dynamics_max", "", "str",
+                       tooltip="月度销售额环比最大值(百分比)")
+        self._add_param(lf_top, 8, 1, "月销售额≥(₽)", "sold_sum_min", "", "str",
+                       tooltip="月销售额最小值(卢布)。示例：10000")
+        self._add_param(lf_top, 8, 2, "月销售额≤(₽)", "sold_sum_max", "", "str",
+                       tooltip="月销售额最大值(卢布)")
+        self._add_param(lf_top, 9, 0, "商品卡加购率≥(%)", "conv_to_cart_pdp_min", "", "str",
+                       tooltip="商品详情页加购转化率最小值(百分比)")
+        self._add_param(lf_top, 9, 1, "商品卡加购率≤(%)", "conv_to_cart_pdp_max", "", "str",
+                       tooltip="商品详情页加购转化率最大值(百分比)")
+        self._add_param(lf_top, 9, 2, "搜索加购率≥(%)", "conv_to_cart_search_min", "", "str",
+                       tooltip="搜索和目录加购转化率最小值(百分比)")
+        self._add_param(lf_top, 10, 0, "搜索加购率≤(%)", "conv_to_cart_search_max", "", "str",
+                       tooltip="搜索和目录加购转化率最大值(百分比)")
+        self._add_param(lf_top, 10, 1, "发货模式", "sales_schema", "FBS", "str",
+                       tooltip="发货模式过滤：FBS, FBP, rFBS 等。默认：FBS")
+        self._add_param(lf_top, 10, 2, "重量≥(g)", "weight_min", "", "str",
+                       tooltip="商品重量最小值(克)。示例：100")
+        self._add_param(lf_top, 11, 0, "重量≤(g)", "weight_max", "5000", "str",
+                       tooltip="商品重量最大值(克)。默认：5000")
+        self._add_param(lf_top, 11, 1, "交货天数≥(天)", "avg_delivery_days_min", "", "str",
+                       tooltip="平均交货天数最小值")
+        self._add_param(lf_top, 11, 2, "交货天数≤(天)", "avg_delivery_days_max", "", "str",
+                       tooltip="平均交货天数最大值")
+
+        _add_section_label(lf_top, 12, "其他")
+        self._add_param(lf_top, 13, 0, "上架起始", "create_date_from", "", "str",
+                       tooltip="商品上架起始日期，格式: YYYY-MM-DD")
+        self._add_param(lf_top, 13, 1, "上架截止", "create_date_to", "", "str",
+                       tooltip="商品上架截止日期，格式: YYYY-MM-DD")
+        self._add_param(lf_top, 13, 2, "排序字段", "sort_by", "", "str",
+                       tooltip="排序依据字段。常用：sold_count(月销), avg_price(均价), create_date(上架时间)")
+        self._add_param(lf_top, 14, 0, "排序方向", "sort_order", "", "str",
+                       tooltip="排序方向：asc(升序), desc(降序)")
 
         # 按钮区
         btn_frame = Frame(control_panel, bg="#ffffff")
@@ -475,7 +543,21 @@ class App:
                 self._param_widgets[key].configure(state=state)
                 
         # 榜单专属
-        for key in ["main_type", "page_size", "page_from", "page_to"]:
+        for key in [
+            "main_type", "page_size", "page_from", "page_to",
+            "sku", "name", "category1", "category2", "category3",
+            "sales_min", "sales_max", "sold_sum_min", "sold_sum_max",
+            "day_sales_min", "day_sales_max",
+            "avg_price_min", "avg_price_max",
+            "conv_to_cart_pdp_min", "conv_to_cart_pdp_max",
+            "conv_to_cart_search_min", "conv_to_cart_search_max",
+            "sales_dynamics_min", "sales_dynamics_max",
+            "sales_schema",
+            "weight_min", "weight_max",
+            "avg_delivery_days_min", "avg_delivery_days_max",
+            "create_date_from", "create_date_to",
+            "sort_by", "sort_order",
+        ]:
             state = "normal" if is_top else "disabled"
             self._param_widgets[key].configure(state=state)
 
@@ -562,7 +644,18 @@ class App:
             "main_type": "hot",
             "page_size": "50",
             "page_from": "1",
-            "page_to": "10"
+            "page_to": "100",
+            "sku": "", "name": "", "category1": "", "category2": "", "category3": "",
+            "sales_min": "3", "sales_max": "65", "sold_sum_min": "", "sold_sum_max": "",
+            "day_sales_min": "", "day_sales_max": "",
+            "avg_price_min": "500", "avg_price_max": "10000",
+            "conv_to_cart_pdp_min": "", "conv_to_cart_pdp_max": "",
+            "conv_to_cart_search_min": "", "conv_to_cart_search_max": "",
+            "sales_dynamics_min": "", "sales_dynamics_max": "",
+            "sales_schema": "FBS", "weight_min": "", "weight_max": "5000",
+            "avg_delivery_days_min": "", "avg_delivery_days_max": "",
+            "create_date_from": "", "create_date_to": "",
+            "sort_by": "", "sort_order": "",
         }
         for k, v in defaults.items():
             if k in self._param_vars:
@@ -966,13 +1059,17 @@ class App:
                          "day_sales_min", "day_sales_max", "avg_price_min", "avg_price_max",
                          "sales_dynamics_min", "sales_dynamics_max", "conv_to_cart_pdp_min",
                          "conv_to_cart_pdp_max", "conv_to_cart_search_min", "conv_to_cart_search_max",
-                         "sales_schema", "sold_sum_min", "sold_sum_max", "avg_delivery_days_min",
-                         "avg_delivery_days_max", "create_date_from", "create_date_to", "sort_by", "sort_order"]:
+                         "sales_schema", "sold_sum_min", "sold_sum_max",
+                         "weight_min", "weight_max",
+                         "avg_delivery_days_min", "avg_delivery_days_max",
+                         "create_date_from", "create_date_to", "sort_by", "sort_order"]:
                     if not hasattr(args, f):
                         setattr(args, f, "")
                 setattr(args, "refresh_hours", 24)
                 setattr(args, "force_refresh", False)
                 setattr(args, "skip_process", False)
+                setattr(args, "retry_failed_now", False)
+                setattr(args, "retry_deferred_now", False)
                 cmd_crawl_top_list_network(args)
             elif mode == "expand-seed-pool-network":
                 if not hasattr(args, "query_key"):
@@ -982,8 +1079,13 @@ class App:
                 print(f"未知采集模式: {mode}")
         except SystemExit:
             pass
-        except Exception:
+        except Exception as exc:
             traceback.print_exc()
+            notify_collection_failed(
+                mode,
+                detail=f"GUI采集线程异常退出",
+                exc=exc,
+            )
         finally:
             sys.stdout = self._old_stdout
             sys.stderr = self._old_stderr

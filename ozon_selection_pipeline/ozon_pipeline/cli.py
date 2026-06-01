@@ -13,9 +13,11 @@ from typing import Any
 from . import db
 from .browser_ozon import BrowserOzonClient
 from .config import ROOT_DIR, settings
+from .feishu import notify_collection_stopped, notify_collection_failed, notify_collection_warning
 from .maozi_api import MaoziClient
 from .ozon_frontend import OzonFrontendClient
 from .repository import (
+    bulk_upsert_top_list_page,
     finish_top_list_run,
     bulk_upsert_seller_home_skus,
     bulk_upsert_seed_skus,
@@ -198,7 +200,7 @@ def build_browser_client(args: argparse.Namespace, *, headless_override: bool | 
 
 
 def default_top_list_filters(args: argparse.Namespace) -> dict[str, Any]:
-    return {
+    filters = {
         "mainType": args.main_type,
         "sku": args.sku or "",
         "category1": args.category1 or "",
@@ -220,12 +222,16 @@ def default_top_list_filters(args: argparse.Namespace) -> dict[str, Any]:
         "sales_schema": args.sales_schema or "",
         "sold_sum_min": args.sold_sum_min or "",
         "sold_sum_max": args.sold_sum_max or "",
+        "weight_min": args.weight_min or "",
+        "weight_max": args.weight_max or "",
         "avg_delivery_days_min": args.avg_delivery_days_min or "",
         "avg_delivery_days_max": args.avg_delivery_days_max or "",
         "create_date": [args.create_date_from, args.create_date_to],
         "sort_by": args.sort_by,
         "sort_order": args.sort_order,
     }
+    return {k: v for k, v in filters.items() if v != "" and v is not None
+            and not (isinstance(v, list) and all(x == "" or x is None for x in v))}
 
 
 def cmd_fetch_sku(args: argparse.Namespace) -> None:
@@ -420,6 +426,15 @@ def run_seller_network(
                 if consecutive_failures >= max_consecutive_failures:
                     wait_seconds = 60
                     print(f"连续失败 {consecutive_failures} 次，暂停 {wait_seconds} 秒后重试...")
+                    notify_collection_warning(
+                        "卖家列表循环",
+                        f"连续 {consecutive_failures} 个卖家页面加载失败",
+                        detail=f"已暂停 {wait_seconds} 秒后自动重试",
+                        extra_fields=[
+                            {"label": "本轮已处理卖家", "value": str(processed_sellers)},
+                            {"label": "本轮达标SKU", "value": str(qualified_skus)},
+                        ],
+                    )
                     time.sleep(wait_seconds)
                     consecutive_failures = 0
                 processed_sellers += 1
@@ -1385,8 +1400,16 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
             
             if consecutive_auth_failures >= 5:
                 log_line("连续认证失败超过5次，停止采集", prefix="manual")
+                notify_collection_stopped(
+                    "seed-pool网络",
+                    "连续认证失败超过5次",
+                    detail=f"认证自动恢复连续失败 {consecutive_auth_failures} 次，采集已停止",
+                    extra_fields=[
+                        {"label": "累计处理种子SKU", "value": str(stats.get("processed_skus", "N/A"))},
+                        {"label": "累计达标SKU", "value": str(stats.get("qualified_skus", "N/A"))},
+                    ],
+                )
                 break
-            
             import sys
             if not sys.stdin.isatty():
                 time.sleep(30)
@@ -1515,6 +1538,18 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
                 
                 if consecutive_auth_failures >= MAX_AUTH_FAILURES:
                     log_line("连续认证失败超过上限，停止采集", prefix="manual")
+                    notify_collection_stopped(
+                        "卖家列表循环",
+                        "连续认证失败超过上限",
+                        round_no=round_no,
+                        detail=f"认证自动恢复连续失败 {consecutive_auth_failures} 次，采集已停止",
+                        extra_fields=[
+                            {"label": "累计处理卖家", "value": str(total_processed)},
+                            {"label": "累计SKU", "value": str(total_skus)},
+                            {"label": "累计达标", "value": str(total_qualified)},
+                            {"label": "累计拒绝", "value": str(total_rejected)},
+                        ],
+                    )
                     break
                 
                 import sys
@@ -1557,6 +1592,20 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
             )
             if consecutive_empty_rounds >= MAX_EMPTY_ROUNDS:
                 print("expand-network: too many consecutive empty rounds, stopping")
+                notify_collection_stopped(
+                    "卖家列表循环",
+                    f"连续 {MAX_EMPTY_ROUNDS} 轮无进展",
+                    round_no=round_no,
+                    detail="所有待处理卖家均已被处理或跳过，无新卖家入队",
+                    extra_fields=[
+                        {"label": "累计处理卖家", "value": str(total_processed)},
+                        {"label": "累计SKU", "value": str(total_skus)},
+                        {"label": "累计达标", "value": str(total_qualified)},
+                        {"label": "累计拒绝", "value": str(total_rejected)},
+                        {"label": "累计跟卖记录", "value": str(total_offers)},
+                    ],
+                    severity="info",
+                )
                 break
             continue
         consecutive_empty_rounds = 0
@@ -1595,6 +1644,7 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
     )
     pages_fetched = 0
     items_fetched = 0
+    t_start = time.perf_counter()
     try:
         with browser.session():
             if cached_run:
@@ -1605,8 +1655,11 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                     f"within_hours={refresh_hours}",
                 )
             else:
+                t_phase = time.perf_counter()
                 for page_no in range(page_from, page_to + 1):
+                    t_page = time.perf_counter()
                     raw = browser.top_list_page(filters, page_no=page_no, page_size=page_size)
+                    t_api = time.perf_counter()
                     if not raw.get("ok"):
                         raise RuntimeError(
                             f"top-list request failed on page {page_no}: HTTP {raw.get('status')} {raw.get('text')}"
@@ -1618,9 +1671,8 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                     items = payload.get("data") or []
                     if not items:
                         break
-                    for index, item in enumerate(items, start=1):
-                        upsert_top_list_item(query_key, run_id, page_no, index, item)
-                        upsert_seed_pool_item(query_key, run_id, page_no, index, item)
+                    bulk_upsert_top_list_page(query_key, run_id, page_no, items)
+                    t_db = time.perf_counter()
                     pages_fetched += 1
                     items_fetched += len(items)
                     print(
@@ -1629,10 +1681,14 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                         f"/ {payload.get('last_page') or '?'}",
                         "| items=",
                         len(items),
+                        f"| api={t_api - t_page:.1f}s",
+                        f"| db={t_db - t_api:.1f}s",
                     )
                     last_page = int(payload.get("last_page") or page_no)
                     if page_no >= last_page:
                         break
+                t_pages_done = time.perf_counter()
+                print(f"phase: pages fetched | pages={pages_fetched} items={items_fetched} elapsed={t_pages_done - t_start:.1f}s")
 
             cached_items, due_items = due_seed_pool_items(
                 query_key=query_key,
@@ -1660,6 +1716,7 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                 print("skip process enabled; only refreshed or reused top-list cache")
                 return
 
+            t_seed_start = time.perf_counter()
             expansion_stats = expand_seed_pool_items(
                 due_items,
                 browser=browser,
@@ -1673,6 +1730,7 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                 seller_sku_workers=args.seller_sku_workers,
                 prefetched_maozi=preflight_seed_pool_maozi_access(due_items, browser=browser, maozi=maozi),
             )
+            t_seed_done = time.perf_counter()
             seller_stats = expansion_stats["seller_stats"]
 
             finish_top_list_run(
@@ -1686,6 +1744,8 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                 rejected_skus=expansion_stats["rejected_skus"],
                 seller_expansions=seller_stats["processed_sellers"],
             )
+            print(
+                f"phase: seed processing done | processed={expansion_stats['processed_skus']} qualified={expansion_stats['qualified_skus']} sellers={seller_stats['processed_sellers']} elapsed={t_seed_done - t_seed_start:.1f}s | total={t_seed_done - t_start:.1f}s")
             print(
                 "top-list crawl summary:",
                 f"seed_pool_skus={len(cached_items)}",
@@ -1708,6 +1768,15 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
             pages_fetched=pages_fetched,
             items_fetched=items_fetched,
             error_message=str(exc),
+        )
+        notify_collection_failed(
+            "榜单采集",
+            detail=f"榜单页采集过程中发生异常，run_id={run_id}",
+            extra_fields=[
+                {"label": "已抓取榜单页数", "value": str(pages_fetched)},
+                {"label": "已入库商品数", "value": str(items_fetched)},
+            ],
+            exc=exc,
         )
         raise
 

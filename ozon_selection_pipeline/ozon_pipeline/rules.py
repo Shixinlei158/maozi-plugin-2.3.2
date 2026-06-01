@@ -81,10 +81,10 @@ DEFAULT_SELECTION_RULE = ProductSelectionRule(
 TOP_LIST_SEED_RULE = ProductSelectionRule(
     name="榜单种子扩展",
     require_unbranded=False,
-    sold_count=RangeRule(minimum=Decimal("1"), maximum=Decimal("65")),
+    sold_count=RangeRule(minimum=Decimal("3"), maximum=Decimal("65")),
     price=RangeRule(),
     weight_g=RangeRule(maximum=Decimal("5000")),
-    create_days=RangeRule(),
+    create_days=RangeRule(maximum=Decimal("200")),
     redemption_rate=RangeRule(maximum=Decimal("5")),
     seller_offer_count=RangeRule(maximum=Decimal("50")),
     required_sales_schema="FBS",

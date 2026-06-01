@@ -918,6 +918,16 @@ class BrowserOzonClient:
                     pass
                 self._sticky_pages.pop(handler_name, None)
 
+            if handler_name == "_fetch_top_list_page":
+                # 优先复用已有的毛子榜单页（避免新建空白页导致SPA Token识别延迟）
+                for page in pages:
+                    try:
+                        if page.url.startswith(MAOZI_SELECTION_ORIGIN):
+                            self._sticky_pages[handler_name] = page
+                            return page, False
+                    except Exception:
+                        continue
+
             if handler_name == "_fetch_maozi_sku3":
                 extension_prefix = f"chrome-extension://{self.extension_id}/"
                 for page in pages:
@@ -1597,6 +1607,76 @@ class BrowserOzonClient:
 
     def _fetch_top_list_page(self, page: Any, filters: dict[str, Any], page_no: int, page_size: int = 50) -> dict[str, Any]:
         self._ensure_maozi_selection_ready(page)
+        raw = self._do_fetch_top_list_page(page, filters, page_no, page_size)
+        # 处理Token过期: 401 "登录已失效"
+        if raw.get("status") == 401 and "登录已失效" in str(raw.get("text", "")):
+            from .captcha_handler import auto_login as do_auto_login
+            import os
+            print("检测到Token过期(401)，执行完整登录...")
+            # 清除旧Token和maozi cookie，强制显示登录页
+            page.evaluate("""() => {
+              localStorage.removeItem('maozierp-core-access');
+              document.cookie.split(';').forEach(c => {
+                const name = c.split('=')[0].trim();
+                document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/';
+              });
+            }""")
+            page.goto("https://ozon.maozierp.com/#/auth/login", wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2000)
+            username = os.environ.get("MAOZI_USERNAME") or None
+            password = os.environ.get("MAOZI_PASSWORD") or None
+            success = do_auto_login(page, username=username, password=password)
+            if success:
+                print("登录成功，直接从当前页请求榜单API（避免SPA导航清Token）...")
+                # 关键改动：不跳转榜单页，直接从当前已登录页注入JS调API
+                # token刚从login写入localStorage，最稳定
+                raw = self._do_fetch_top_list_page(page, filters, page_no, page_size)
+            else:
+                raise RuntimeError("自动登录失败。请手动在浏览器中登录 https://ozon.maozierp.com 后重试")
+        return raw
+
+    def _do_fetch_top_list_page(self, page: Any, filters: dict[str, Any], page_no: int, page_size: int = 50) -> dict[str, Any]:
+        # 检查token：SPA初始化可能延迟，等待最多10秒
+        for _ in range(20):
+            token_check = page.evaluate(
+                """() => {
+                  const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
+                  return { hasToken: !!access.accessToken, pageUrl: location.href };
+                }"""
+            )
+            if token_check.get("hasToken"):
+                break
+            page.wait_for_timeout(500)
+        if not token_check.get("hasToken"):
+            current_url = page.url
+            if "/auth/login" in current_url:
+                from .captcha_handler import auto_login as do_auto_login
+                print("检测到登录页，自动登录...")
+                if do_auto_login(page):
+                    print("登录成功，跳转榜单页...")
+                    page.goto(MAOZI_SELECTION_URL, wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(3000)
+                    # 重新检查token
+                    for _ in range(20):
+                        tc = page.evaluate(
+                            """() => {
+                              const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
+                              return !!access.accessToken;
+                            }"""
+                        )
+                        if tc:
+                            break
+                        page.wait_for_timeout(500)
+            if not page.evaluate(
+                """() => {
+                  const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
+                  return !!access.accessToken;
+                }"""
+            ):
+                raise RuntimeError(
+                    "毛子ERP Token缺失。请在浏览器中手动打开 https://ozon.maozierp.com 登录后重试。"
+                    f"当前页面: {current_url}"
+                )
         return page.evaluate(
             """
             async ({ filters, pageNo, pageSize, timeoutMs }) => {
@@ -1609,11 +1689,15 @@ class BrowserOzonClient:
               for (const [key, value] of Object.entries(filters || {})) {
                 if (Array.isArray(value)) {
                   for (const item of value) {
-                    params.append(`${key}[]`, item ?? '');
+                    if (item != null && item !== '') {
+                      params.append(`${key}[]`, item);
+                    }
                   }
                   continue;
                 }
-                params.set(key, value ?? '');
+                if (value != null && value !== '') {
+                  params.set(key, value);
+                }
               }
               params.set('page', String(pageNo));
               params.set('page_size', String(pageSize));
@@ -1675,6 +1759,17 @@ class BrowserOzonClient:
         ).lower()
         if any(marker.lower() in challenge_text for marker in MAOZI_CHALLENGE_MARKERS):
             print(f"WARN: Maozi website returned Cloudflare challenge, skipping verification")
+        # 检测登录页跳转，自动触发登录
+        if "/auth/login" in page.url or any(indicator in challenge_text for indicator in ["请按住滑块拖动", "请登录"]) and "毛子" not in challenge_text:
+            from .captcha_handler import auto_login as do_auto_login
+            print("检测到毛子ERP未登录，自动登录...")
+            ok = do_auto_login(page)
+            if ok:
+                print("自动登录成功，重新导航到榜单页")
+                page.goto(MAOZI_SELECTION_URL, wait_until="domcontentloaded", timeout=120000)
+                page.wait_for_timeout(3000)
+            else:
+                raise RuntimeError("毛子ERP自动登录失败。请在浏览器中手动登录后重试")
 
     def _extension_popup_url(self) -> str:
         return f"chrome-extension://{self.extension_id}/popup.html"
