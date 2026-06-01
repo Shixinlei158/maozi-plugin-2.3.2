@@ -18,6 +18,8 @@ from .maozi_api import MaoziClient
 from .ozon_frontend import OzonFrontendClient
 from .repository import (
     bulk_upsert_top_list_page,
+    bulk_upsert_seller_offers,
+    bulk_mark_seed_pool_processed,
     finish_top_list_run,
     bulk_upsert_seller_home_skus,
     bulk_upsert_seed_skus,
@@ -708,20 +710,18 @@ def run_seller_network(
                 qualified_skus += 1
                 offers = sku_result.get("offers") or []
                 stored_seller_offers = 0
-                for offer in offers:
-                    try:
-                        upsert_seller_offer(sku, offer)
-                        stored_seller_offers += 1
-                    except Exception as exc:
-                        vlog("seller-home offer upsert failed:", f"sku={sku}", f"error={exc}", prefix="seller")
-                    home_url = (offer.get("seller_home_url") or "").strip()
-                    if not home_url:
-                        continue
-                    seller_offer_urls[home_url.rstrip("/")] = {
-                        "url": home_url,
-                        "name": offer.get("name"),
-                        "depth": depth + 1,
-                    }
+                if offers:
+                    bulk_upsert_seller_offers(sku, offers)
+                    stored_seller_offers = len(offers)
+                    for offer in offers:
+                        home_url = (offer.get("seller_home_url") or "").strip()
+                        if not home_url:
+                            continue
+                        seller_offer_urls[home_url.rstrip("/")] = {
+                            "url": home_url,
+                            "name": offer.get("name"),
+                            "depth": depth + 1,
+                        }
                 seller_offer_rows += stored_seller_offers
                 stored_offer_rows += stored_seller_offers
             else:
@@ -2379,11 +2379,7 @@ def process_top_list_sku(
             "offers": offers or [],
         }
     if preview_rule.matched and offers is not None:
-        for offer in offers:
-            try:
-                upsert_seller_offer(sku, offer)
-            except Exception as exc:
-                vlog("seller_offer upsert failed:", f"sku={sku}", f"error={exc}", prefix="seed")
+        bulk_upsert_seller_offers(sku, offers)
     strict_metric = upsert_sku3_response(
         sku,
         response,
@@ -2745,11 +2741,7 @@ def process_sku(
         apply_selection_rule=True,
     )
     if metric.get("qualified") and offers is not None:
-        for offer in offers:
-            try:
-                upsert_seller_offer(sku, offer)
-            except Exception as exc:
-                vlog("seller_offer upsert failed:", f"sku={sku}", f"error={exc}", prefix="sku")
+        bulk_upsert_seller_offers(sku, offers)
     return {
         "sku": metric["sku"],
         "qualified": bool(metric.get("qualified")),

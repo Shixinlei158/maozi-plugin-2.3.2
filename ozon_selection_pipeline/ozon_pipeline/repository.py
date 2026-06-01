@@ -1569,6 +1569,37 @@ def mark_seed_pool_processed(
     )
 
 
+def bulk_mark_seed_pool_processed(items: list[dict[str, Any]]) -> int:
+    """批量更新 seed_pool_skus 处理状态"""
+    if not items:
+        return 0
+    rows = []
+    for item in items:
+        rows.append({
+            "source_type": item.get("source_type", "top_list"),
+            "query_key": item.get("query_key", ""),
+            "sku": str(item.get("sku", "")),
+            "snapshot_hash": item.get("snapshot_hash"),
+            "status": item.get("status", ""),
+            "reason": (item.get("reason", "") or "")[:512] or None,
+            "seller_offer_count": item.get("seller_offer_count"),
+        })
+    return db.execute_insert_many(
+        """
+        INSERT INTO seed_pool_skus (source_type, query_key, sku, last_processed_snapshot_hash, last_process_status, last_process_reason, last_offer_count, last_processed_at)
+        VALUES (%(source_type)s, %(query_key)s, %(sku)s, %(snapshot_hash)s, %(status)s, %(reason)s, %(seller_offer_count)s, CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE
+          last_processed_at=CURRENT_TIMESTAMP,
+          last_processed_snapshot_hash=COALESCE(VALUES(last_processed_snapshot_hash), last_processed_snapshot_hash),
+          last_process_status=VALUES(last_process_status),
+          last_process_reason=VALUES(last_process_reason),
+          last_offer_count=COALESCE(VALUES(last_offer_count), last_offer_count)
+        """,
+        rows,
+        batch_size=200,
+    )
+
+
 def seller_recently_collected(home_url: str) -> bool:
     key = seller_key(home_url)
     row = db.fetch_one(
@@ -1720,6 +1751,77 @@ def upsert_seller_offer(source_sku: str, offer: dict[str, Any]) -> str:
             priority=80,
         )
     return key
+
+
+def bulk_upsert_seller_offers(source_sku: str, offers: list[dict[str, Any]]) -> list[str]:
+    """批量写入跟卖列表：先批量写seller_shops，再批量写seller_offers"""
+    if not offers:
+        return []
+    shop_rows = []
+    seen_keys = set()
+    for offer in offers:
+        home_url = offer.get("seller_home_url") or ""
+        key = seller_key(home_url)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        shop_rows.append({
+            "seller_key": key,
+            "name": offer.get("name"),
+            "home_url": home_url,
+            "logo_url": offer.get("logo_url"),
+            "raw_json": json_dumps(offer.get("raw") or {}),
+            "next_collect_after": datetime.now() + timedelta(days=settings.seller_recollect_days),
+        })
+    if shop_rows:
+        db.execute_insert_many(
+            """
+            INSERT INTO seller_shops (seller_key, name, home_url, logo_url, raw_json, next_collect_after)
+            VALUES (%(seller_key)s, %(name)s, %(home_url)s, %(logo_url)s, %(raw_json)s, %(next_collect_after)s)
+            ON DUPLICATE KEY UPDATE
+              name=COALESCE(VALUES(name), name),
+              logo_url=COALESCE(VALUES(logo_url), logo_url),
+              raw_json=COALESCE(VALUES(raw_json), raw_json),
+              updated_at=CURRENT_TIMESTAMP
+            """,
+            shop_rows,
+            batch_size=200,
+        )
+    offer_rows = []
+    for offer in offers:
+        home_url = offer.get("seller_home_url") or ""
+        key = seller_key(home_url)
+        offer_rows.append({
+            "source_sku": str(source_sku),
+            "seller_key": key,
+            "offer_sku": offer.get("offer_sku") or "",
+            "seller_name": offer.get("name"),
+            "seller_home_url": home_url,
+            "offer_product_url": offer.get("offer_product_url"),
+            "price_text": offer.get("price_text"),
+            "price_amount": offer.get("price_amount"),
+            "currency": offer.get("currency"),
+            "main_image_url": offer.get("main_image_url"),
+            "raw_json": json_dumps(offer.get("raw") or {}),
+        })
+    if offer_rows:
+        db.execute_insert_many(
+            """
+            INSERT INTO seller_offers (source_sku, seller_key, offer_sku, seller_name, seller_home_url,
+              offer_product_url, price_text, price_amount, currency, main_image_url, raw_json)
+            VALUES (%(source_sku)s, %(seller_key)s, %(offer_sku)s, %(seller_name)s, %(seller_home_url)s,
+              %(offer_product_url)s, %(price_text)s, %(price_amount)s, %(currency)s, %(main_image_url)s, %(raw_json)s)
+            ON DUPLICATE KEY UPDATE
+              seller_name=VALUES(seller_name), seller_home_url=VALUES(seller_home_url),
+              offer_product_url=VALUES(offer_product_url), price_text=VALUES(price_text),
+              price_amount=VALUES(price_amount), currency=VALUES(currency),
+              main_image_url=VALUES(main_image_url), raw_json=VALUES(raw_json),
+              collected_at=CURRENT_TIMESTAMP
+            """,
+            offer_rows,
+            batch_size=200,
+        )
+    return [seller_key(o.get("seller_home_url") or "") for o in offers]
 
 
 def upsert_seller_home_sku(seller_home_url: str, item: dict[str, Any]) -> str:
