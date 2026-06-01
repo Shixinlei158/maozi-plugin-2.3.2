@@ -1,0 +1,216 @@
+- generic [ref=e4]:
+  - banner [ref=e7]:
+    - generic [ref=e9]:
+      - img "Ozon" [ref=e11]
+      - button "Каталог" [ref=e14] [cursor=pointer]:
+        - generic [ref=e15]:
+          - img [ref=e16]
+          - generic [ref=e18]: Каталог
+      - generic [ref=e23]:
+        - generic [ref=e24]:
+          - generic [ref=e25]:
+            - generic "Везде" [ref=e26]
+            - img [ref=e28]
+          - generic [ref=e30]:
+            - textbox "Искать на Ozon" [ref=e31]
+            - button [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+        - button "Поиск" [ref=e39] [cursor=pointer]:
+          - img [ref=e40]
+      - generic [ref=e45]:
+        - img [ref=e50] [cursor=pointer]
+        - link [ref=e53] [cursor=pointer]:
+          - /url: /my/orderlist/
+          - img [ref=e55]
+        - link [ref=e57] [cursor=pointer]:
+          - /url: /my/favorites
+          - img [ref=e59]
+        - link [ref=e61] [cursor=pointer]:
+          - /url: /cart
+          - img [ref=e63]
+    - generic [ref=e65]:
+      - list [ref=e68]:
+        - listitem [ref=e69]:
+          - link "Ozon fresh" [ref=e70] [cursor=pointer]:
+            - /url: /category/supermarket-25000/?miniapp=supermarket
+            - img [ref=e71]
+            - text: Ozon fresh
+        - listitem [ref=e73]:
+          - link "Ozon Банк" [ref=e74] [cursor=pointer]:
+            - /url: https://ozon.ru/fintech/signin
+            - img [ref=e75]
+            - text: Ozon Банк
+        - listitem [ref=e77]:
+          - link "Билеты, отели" [ref=e78] [cursor=pointer]:
+            - /url: https://www.ozon.ru/travel/?mwc_campaign=oztravel_horizontal-menu_flight
+            - img [ref=e79]
+            - text: Билеты, отели
+        - listitem [ref=e81]:
+          - button "Для бизнеса" [ref=e83] [cursor=pointer]:
+            - img [ref=e84]
+            - text: Для бизнеса
+            - img [ref=e86]
+        - listitem [ref=e88]:
+          - link "Одежда" [ref=e89] [cursor=pointer]:
+            - /url: /category/odezhda-obuv-i-aksessuary-7500/
+        - listitem [ref=e90]:
+          - link "Электроника" [ref=e91] [cursor=pointer]:
+            - /url: /category/elektronika-15500/
+        - listitem [ref=e92]:
+          - link "Дом и сад" [ref=e93] [cursor=pointer]:
+            - /url: /category/dom-i-sad-14500/
+        - listitem [ref=e94]:
+          - link "Товары за 1₽" [ref=e95] [cursor=pointer]:
+            - /url: https://www.ozon.ru/highlight/ozon-bank-1332387/
+        - listitem [ref=e96]:
+          - link "Сертификаты" [ref=e97] [cursor=pointer]:
+            - /url: https://www.ozon.ru/landing/giftcertificates/?perehod=headerdesk
+      - generic [ref=e98]:
+        - generic [ref=e103] [cursor=pointer]:
+          - button "Москва" [ref=e105]:
+            - generic [ref=e106]: Москва
+          - generic [ref=e108]: •
+          - button "Укажите адрес" [ref=e110]:
+            - generic [ref=e111]: Укажите адрес
+        - button "RU" [ref=e113] [cursor=pointer]:
+          - img [ref=e114]
+          - text: RU
+    - generic [ref=e122]:
+      - generic [ref=e123]: ПРАЗДНИК ПРИЛЕТИТ
+      - generic [ref=e124]:
+        - generic [ref=e125]:
+          - generic [ref=e126]: "2"
+          - generic [ref=e127]: дня до старта
+        - img [ref=e128]
+      - img [ref=e130]
+  - generic [ref=e134]:
+    - generic [ref=e135]:
+      - generic [ref=e136]:
+        - generic [ref=e138]:
+          - link [ref=e141] [cursor=pointer]:
+            - /url: https://www.ozon.ru/highlight/3931453/?advert=AKUDxxfAR7ASbIBBaLNoZwtDg0OQAMZK41EmfdV0gZvA0WMZ-qgcUjhi7Zx4lQ6Ysw64O-S1Y-4krwjFOZcTqzcXwFsXqSre2FDw8qB7DGDrZurNoI7vhKFsq2HZSZV0c8yQqln-wLkjY70n7pezyE4WkXVPa5tDeexHai5RMGb2nVYO3lenuQZs9z8ClPV4&erid=2W5zFHUeagH&hs=1
+            - img [ref=e143]
+          - generic:
+            - generic:
+              - link:
+                - /url: https://www.ozon.ru/travel/promo/native/all-tours-rusland26/?advert=AKUDN_Yb9wA3_go1t-LZEu74YkGBr5apFz2SvXLsMp4lt4JFdV6qAyknIymSJH6G87Srrie6igXyWfyZZzS2sARf26rf9VVgmWrQudgvTDajcMeKtBGR6P8gOz4mku7zpbiKiODlnZiBppCdnlwA3H8J4mSbzSOSw8iFzg8GHiTwK0wZNeiZs2S3aFIffLSE&erid=2W5zFHdYBa9&hs=1&miniapp=travel&mwc_campaign=oztravel_hot-all-tours_17607091_%7Ctman%7Call-tours%7C_bannerm_hotel
+          - generic:
+            - generic:
+              - link:
+                - /url: https://www.ozon.ru/highlight/nasha-pekarnya-2875020/?advert=AKUDrqt4jmdxbg5-HAuA38u2XPiaeTmYB-cTw4ZoNgL4NB0AsvMlzJERv4w3Z1eW8g1Vvuio6quWfaPhZxBYQDorxI6ZaZAMbKgLSkFwZOQUrmCTZEW2xR_oMfrgQsRuhKYeX537L2YFIyyv0bgpKlskYUyIoqcvNN03cq4UbXqj1mR3x3lmHyWD6KMr_vHh&erid=2W5zFGc8xxh&hs=1&miniapp=supermarket
+          - generic:
+            - generic:
+              - link:
+                - /url: https://finance.ozon.ru/promo/stars/landing?advert=AKUDiEZ5Hd7om-WKW9PW8ojEE25eE3yozOHP5g68xkH5HRwDvzcLy62tCIrmfWFd5i9dTxA_Jg0g8BI8zzgcuACQwtEn50JXUlkgA2F5Sqki7b9e7xJ7TC_e23kGGRkCrwZM8fSf3ZqoIdQIaOjP3A6xd-pMAPlYhmNAnd0dAGOOzA6rE8AK-ahM9diE0A&erid=2W5zFHuxRbP&hs=1&perehod=perf_loyalty_23720496_common_576998_grechka_s_main_free
+        - generic:
+          - button [ref=e144] [cursor=pointer]:
+            - img [ref=e145]
+          - button [ref=e148] [cursor=pointer]:
+            - img [ref=e149]
+      - generic "Реклама" [ref=e157]
+    - generic [ref=e160]:
+      - generic [ref=e161]:
+        - link "Скидки недели" [ref=e162] [cursor=pointer]:
+          - /url: /product/sabo-4433989293/?at=57twzrBOJcj345JNtjQBWyoCJP4mq5iR797V1TlOKv5B
+          - generic [ref=e163]:
+            - img [ref=e165]
+            - generic:
+              - generic:
+                - generic:
+                  - img
+                  - generic "Скидки недели"
+        - generic [ref=e166]:
+          - generic [ref=e168]:
+            - generic [ref=e169]: 291 ₽
+            - generic [ref=e170]: 826 ₽
+            - generic [ref=e171]: −64%
+          - link "Сабо" [ref=e173] [cursor=pointer]:
+            - /url: /product/sabo-4433989293/?at=57twzrBOJcj345JNtjQBWyoCJP4mq5iR797V1TlOKv5B
+            - generic [ref=e174]: Сабо
+        - button [ref=e177] [cursor=pointer]:
+          - img [ref=e178]
+      - generic [ref=e182]:
+        - link "Скидки недели" [ref=e183] [cursor=pointer]:
+          - /url: /product/vozdushnyy-filtr-bestune-faw-m9-bestyun-m9-bestune-t99-hongqi-h5-honchi-h5-hongqi-h6-hongqi-hq9-3544007048/?at=46tRnwXGVcN5gPY1f6VKVQLUAnl15MczG9MLgtxkY1AM
+          - generic [ref=e184]:
+            - img [ref=e186]
+            - generic:
+              - generic:
+                - generic:
+                  - img
+                  - generic "Скидки недели"
+        - generic [ref=e187]:
+          - generic [ref=e189]:
+            - generic [ref=e190]: 730 ₽
+            - generic [ref=e191]: 2 400 ₽
+            - generic [ref=e192]: −69%
+          - link "Воздушный фильтр Bestune (FAW) M9, Бестюн М9, Bestune T99, HONGQI H5, ХОНЧИ H5, HONGQI H6, HONGQI HQ9 , HONGQI HS3 , HONGQI HS5, HONGQI HS7" [ref=e194] [cursor=pointer]:
+            - /url: /product/vozdushnyy-filtr-bestune-faw-m9-bestyun-m9-bestune-t99-hongqi-h5-honchi-h5-hongqi-h6-hongqi-hq9-3544007048/?at=46tRnwXGVcN5gPY1f6VKVQLUAnl15MczG9MLgtxkY1AM
+            - generic [ref=e195]: Воздушный фильтр Bestune (FAW) M9, Бестюн М9, Bestune T99, HONGQI H5, ХОНЧИ H5, HONGQI H6, HONGQI HQ9 , HONGQI HS3 , HONGQI HS5, HONGQI HS7
+          - generic [ref=e196]:
+            - img [ref=e197]
+            - generic [ref=e199]: "4.9"
+            - img [ref=e200]
+            - generic [ref=e202]: 136 отзывов
+        - button [ref=e205] [cursor=pointer]:
+          - img [ref=e206]
+      - generic [ref=e210]:
+        - link "250 баллов за отзыв Скидки недели" [ref=e211] [cursor=pointer]:
+          - /url: /product/reletech-23-8-monitor-fast-ips-igrovoy-monitor-180-gts-fhd-1-ms-otklik-hdmi-dp-ips-1920x1080-full-3563031294/?at=oZt61yOJnSME6DO2TQ9rWq0u6roBrwT238LYkt9NAoy7
+          - generic [ref=e212]:
+            - img [ref=e214]
+            - generic:
+              - generic:
+                - generic:
+                  - img
+                  - generic "250 баллов за отзыв"
+              - generic:
+                - generic:
+                  - img
+                  - generic "Скидки недели"
+        - generic [ref=e215]:
+          - generic [ref=e217]:
+            - generic [ref=e218]: 7 489 ₽
+            - generic [ref=e219]: 29 900 ₽
+            - generic [ref=e220]: −74%
+          - link "Reletech 23.8\" Монитор Fast-IPS, игровой монитор, 180 Гц, FHD, 1 мс отклик, HDMI+DP, IPS, 1920x1080 Full HD, 180 Гц, черный" [ref=e222] [cursor=pointer]:
+            - /url: /product/reletech-23-8-monitor-fast-ips-igrovoy-monitor-180-gts-fhd-1-ms-otklik-hdmi-dp-ips-1920x1080-full-3563031294/?at=oZt61yOJnSME6DO2TQ9rWq0u6roBrwT238LYkt9NAoy7
+            - generic [ref=e223]: Reletech 23.8" Монитор Fast-IPS, игровой монитор, 180 Гц, FHD, 1 мс отклик, HDMI+DP, IPS, 1920x1080 Full HD, 180 Гц, черный
+          - generic [ref=e224]:
+            - img [ref=e225]
+            - generic [ref=e227]: "4.8"
+            - img [ref=e228]
+            - generic [ref=e230]: 119 отзывов
+        - button [ref=e233] [cursor=pointer]:
+          - img [ref=e234]
+      - generic [ref=e238]:
+        - link [ref=e239] [cursor=pointer]:
+          - /url: /product/avtopoliv-3-sm-10-sht-tsvet-salatovyy-4374107562/?at=J8tg2jNPJh76G1gVc0oVYQlhXGQ6G8soJkx5PSOxlYEK
+          - img [ref=e242]
+        - generic [ref=e243]:
+          - generic [ref=e246]: 138 ₽
+          - link "Автополив 3 см, 10 шт, цвет салатовый" [ref=e248] [cursor=pointer]:
+            - /url: /product/avtopoliv-3-sm-10-sht-tsvet-salatovyy-4374107562/?at=J8tg2jNPJh76G1gVc0oVYQlhXGQ6G8soJkx5PSOxlYEK
+            - generic [ref=e249]: Автополив 3 см, 10 шт, цвет салатовый
+        - button [ref=e252] [cursor=pointer]:
+          - img [ref=e253]
+      - generic [ref=e257]:
+        - link "Скидки недели" [ref=e258] [cursor=pointer]:
+          - /url: /product/remen-4267646349/?at=oZt61yOJnSzW0OmYc0mV9gNTrWq8RZU3RmmMvf7wlrPX
+          - generic [ref=e259]:
+            - img [ref=e261]
+            - generic:
+              - generic:
+                - generic:
+                  - img
+                  - generic "Скидки недели"
+        - generic [ref=e262]:
+          - generic [ref=e264]:
+            - generic [ref=e265]: 207 ₽
+            - generic [ref=e266]: 841 ₽
+            - generic [ref=e267]: −75%
+          - link "Ремень" [ref=e269] [cursor=pointer]:
+            - /url: /product/remen-4267646349/?at=oZt61yOJnSzW0OmYc0mV9gNTrWq8RZU3RmmMvf7wlrPX
+            - generic [ref=e270]: Ремень
+        - button [ref=e273] [cursor=pointer]:
+          - img [ref=e274]

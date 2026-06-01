@@ -78,8 +78,35 @@ def save_to_db(sku, image_links, detail_urls, responses):
                     sku,
                 ),
             )
+
+            # 写入一对多新表 sku_1688_products
+            cursor.execute(
+                "DELETE FROM sku_1688_products WHERE sku = %s",
+                (sku,),
+            )
+            search_resp = responses[0] if responses else {}
+            items = search_resp.get("data", {}).get("data", [])
+            for rank, item in enumerate(items, start=1):
+                pic_url = item.get("imageUrl", "")
+                detail_url = item.get("offerDetailUrl", "") or item.get("link", "")
+                item_id = item.get("itemId", "")
+                if pic_url or detail_url:
+                    cursor.execute(
+                        "INSERT INTO sku_1688_products "
+                        "(sku, item_id, image_url, detail_url, rank_pos, raw_json) "
+                        "VALUES (%s, %s, %s, %s, %s, %s)",
+                        (
+                            sku,
+                            str(item_id) if item_id else None,
+                            pic_url,
+                            detail_url,
+                            rank,
+                            json.dumps(item, ensure_ascii=False),
+                        ),
+                    )
+
         conn.commit()
-        print(f"[DB] 已写入: sku={sku}, {len(image_links)}张图")
+        print(f"[DB] 已写入: sku={sku}, {len(image_links)}张图, {len(items)}条明细")
     except Exception as e:
         print(f"[DB] 写入失败: {e}")
         conn.rollback()

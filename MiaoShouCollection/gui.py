@@ -887,9 +887,35 @@ class App:
                         sku_id,
                     ),
                 )
+
+                # 写入一对多新表 sku_1688_products
+                cursor.execute(
+                    "DELETE FROM sku_1688_products WHERE sku = %s",
+                    (sku_id,),
+                )
+                items = response_data.get("data", {}).get("data", [])
+                for rank, item in enumerate(items, start=1):
+                    pic_url = item.get("imageUrl", "")
+                    detail_url = item.get("offerDetailUrl", "") or item.get("link", "")
+                    item_id = item.get("itemId", "")
+                    if pic_url or detail_url:
+                        cursor.execute(
+                            "INSERT INTO sku_1688_products "
+                            "(sku, item_id, image_url, detail_url, rank_pos, raw_json) "
+                            "VALUES (%s, %s, %s, %s, %s, %s)",
+                            (
+                                sku_id,
+                                str(item_id) if item_id else None,
+                                pic_url,
+                                detail_url,
+                                rank,
+                                json.dumps(item, ensure_ascii=False),
+                            ),
+                        )
+
             conn.commit()
             self._log_queue.put(
-                f"已写入数据库: sku={sku_id}, {len(image_links)} 张图\n"
+                f"已写入数据库: sku={sku_id}, {len(image_links)} 张图, {len(items)} 条明细\n"
             )
         except Exception as e:
             self._log_queue.put(f"写入数据库失败: {e}\n")
