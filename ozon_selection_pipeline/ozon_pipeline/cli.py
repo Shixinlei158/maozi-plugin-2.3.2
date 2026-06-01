@@ -290,6 +290,32 @@ def cmd_fetch_seller_home(args: argparse.Namespace) -> None:
         print(item.get("href"), "|", item.get("title") or "<no-title>")
 
 
+_PRICE_MIN_CNY = Decimal("20")
+_PRICE_MAX_CNY = Decimal("800")
+_RUB_RATE = Decimal(str(settings.rub_to_cny_rate))
+
+
+def _seller_item_passes_prefilter(item: dict[str, Any]) -> bool:
+    """卖家主页商品廉价预筛：在SKU3获取前先行过滤"""
+    # 价格预筛：过滤明显超出DEFAULT_SELECTION_RULE范围的商品
+    price = item.get("price_amount")
+    currency = (item.get("currency") or "").strip().upper()
+    if price is not None:
+        try:
+            price_d = Decimal(str(price))
+            if currency in ("RUB", "RUR", ""):
+                price_cny = price_d * _RUB_RATE
+            elif currency in ("CNY", "RMB"):
+                price_cny = price_d
+            else:
+                price_cny = None
+            if price_cny is not None and (price_cny < _PRICE_MIN_CNY or price_cny > _PRICE_MAX_CNY):
+                return False
+        except Exception:
+            pass
+    return True
+
+
 def run_seller_network(
     queue: deque[dict[str, Any]],
     *,
@@ -444,6 +470,11 @@ def run_seller_network(
 
             crawl_elapsed = time.perf_counter() - crawl_start
             items = result.get("items") or []
+            # 廉价预筛：在进入昂贵的SKU3获取之前过滤明显不合格的商品
+            raw_count = len(items)
+            items = [it for it in items if _seller_item_passes_prefilter(it)]
+            if raw_count != len(items):
+                print(f"  prefilter: {raw_count}→{len(items)} (过滤{raw_count - len(items)}条)")
             source = result.get("source") or "unknown"
             vlog(
                 "seller page detail:",
