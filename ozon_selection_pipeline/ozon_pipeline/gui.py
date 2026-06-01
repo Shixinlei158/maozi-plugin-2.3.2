@@ -156,8 +156,8 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Ozon 采集控制台 (v2.3.2 专业版)")
-        self.root.geometry("1100x820")
-        self.root.minsize(960, 720)
+        self.root.geometry("1100x900")
+        self.root.minsize(960, 800)
         self.root.configure(bg="#f5f6fa")
 
         self._stop_flag = threading.Event()
@@ -505,7 +505,7 @@ class App:
 
         self._log_area = scrolledtext.ScrolledText(
             log_frame, wrap="word", font=("Consolas", 9), bg="#1e1e1e", fg="#d4d4d4",
-            insertbackground="white", state="normal"
+            insertbackground="white", state="normal", height=20
         )
         self._log_area.pack(fill="both", expand=True)
         self._log_area.configure(state="disabled")
