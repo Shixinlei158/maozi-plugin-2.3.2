@@ -1806,6 +1806,8 @@ def detect_chrome_executable() -> Path | None:
         Path("/usr/bin/google-chrome"),
         Path("/usr/bin/google-chrome-stable"),
         Path("/snap/bin/chromium"),
+        # lx server custom Chrome
+        Path.home() / "chrome" / "opt" / "google" / "chrome" / "chrome",
     ]
     for candidate in candidates:
         if candidate.exists():

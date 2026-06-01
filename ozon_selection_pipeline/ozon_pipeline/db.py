@@ -12,7 +12,23 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.exc import OperationalError
 
-from .config import settings
+from .config import settings, DBProfile, DB_PROFILES, _active_db_profile_key
+
+_active_db_profile: DBProfile = DB_PROFILES.get(_active_db_profile_key, DB_PROFILES["local"])
+
+def get_active_profile() -> DBProfile:
+    return _active_db_profile
+
+def set_active_profile(key: str) -> bool:
+    global _active_db_profile
+    profile = DB_PROFILES.get(key)
+    if profile is None:
+        return False
+    _active_db_profile = profile
+    # 清除旧连接缓存，下次请求自动重连
+    with _engine_lock:
+        _engine_cache.clear()
+    return True
 
 _DEFAULT_DATABASE = object()
 _IGNORABLE_MIGRATION_ERROR_CODES = {1060, 1061}
@@ -25,23 +41,18 @@ _engine_cache: dict[str, Any] = {}
 _engine_lock = Lock()
 
 def get_engine(database: Optional[str] = None):
-    db_name = database if database is not None else settings.db_name
+    db_name = database if database is not None else _active_db_profile.database
     cache_key = db_name or ""
     
     with _engine_lock:
         if cache_key in _engine_cache:
             return _engine_cache[cache_key]
         
-        # Build connection URL
-        url = f"mysql+pymysql://{settings.db_user}:{settings.db_password}@{settings.db_host}:{settings.db_port}"
+        profile = _active_db_profile
+        url = f"mysql+pymysql://{profile.user}:{profile.password}@{profile.host}:{profile.port}"
         if db_name:
             url += f"/{db_name}"
             
-        # Defensive configuration for Tailscale/WireGuard VPN:
-        # - pool_recycle=600: recycle before WireGuard rekey (every ~2min) creates stale connections
-        # - pool_pre_ping=True: verify connection liveness before each use
-        # - lock_wait_timeout=10: if a prior dead connection holds row locks, fail fast instead of
-        #   waiting 50s (MySQL default) and cascading timeouts across all workers
         engine = create_engine(
             url,
             poolclass=QueuePool,
@@ -61,7 +72,7 @@ def get_engine(database: Optional[str] = None):
         return engine
 
 def connect(database: Optional[str] | object = _DEFAULT_DATABASE):
-    db_name = settings.db_name if database is _DEFAULT_DATABASE else database
+    db_name = _active_db_profile.database if database is _DEFAULT_DATABASE else database
     engine = get_engine(db_name if isinstance(db_name, str) else None)
     return engine.raw_connection()
 

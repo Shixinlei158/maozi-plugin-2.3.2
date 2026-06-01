@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import date
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -8,6 +9,78 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
+
+IS_LINUX = sys.platform == "linux"
+
+
+@dataclass
+class DBProfile:
+    name: str
+    host: str
+    port: int = 3306
+    user: str = "root"
+    password: str = "root"
+    database: str = "ozon_selection"
+
+DB_PROFILES: dict[str, DBProfile] = {
+    "local": DBProfile(
+        name="本机",
+        host=os.getenv("DB_HOST_LOCAL", "127.0.0.1"),
+        port=int(os.getenv("DB_PORT_LOCAL", "3306")),
+        user=os.getenv("DB_USER_LOCAL", "root"),
+        password=os.getenv("DB_PASSWORD_LOCAL", "root"),
+        database=os.getenv("DB_NAME", "ozon_selection"),
+    ),
+    "ts-lx": DBProfile(
+        name="ts-lx",
+        host=os.getenv("DB_HOST_TS", "100.97.110.39"),
+        port=int(os.getenv("DB_PORT_TS", "3306")),
+        user=os.getenv("DB_USER_TS", "root"),
+        password=os.getenv("DB_PASSWORD_TS", "root"),
+        database=os.getenv("DB_NAME", "ozon_selection"),
+    ),
+    "frp-lx": DBProfile(
+        name="frp-lx",
+        host=os.getenv("DB_HOST_FRP", "127.0.0.1"),
+        port=int(os.getenv("DB_PORT_FRP", "13306")),
+        user=os.getenv("DB_USER_FRP", "root"),
+        password=os.getenv("DB_PASSWORD_FRP", "root"),
+        database=os.getenv("DB_NAME", "ozon_selection"),
+    ),
+}
+
+def _detect_db_profile() -> str:
+    """自动检测最优数据库连接。
+    如果 .env DB_HOST 明确指向远程 → 用对应 profile；
+    否则优先尝试 127.0.0.1:3306（本地/lx同机），不可达则降级。
+    """
+    db_host = os.getenv("DB_HOST", "")
+    # 显式远程地址 → 直接使用
+    if db_host.startswith("100."):
+        return "ts-lx"
+    if db_host and db_host not in ("127.0.0.1", "localhost", ""):
+        return "ts-lx"
+
+    # 没有显式远程配置 → 自动探测本地
+    local = DB_PROFILES["local"]
+    try:
+        import pymysql
+        conn = pymysql.connect(
+            host=local.host, port=local.port,
+            user=local.user, password=local.password,
+            database=local.database,
+            connect_timeout=2, charset="utf8mb4",
+        )
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        conn.close()
+        return "local"
+    except Exception:
+        pass
+    return "local"
+
+_active_db_profile_key: str = _detect_db_profile()
+
 
 
 @dataclass(frozen=True)

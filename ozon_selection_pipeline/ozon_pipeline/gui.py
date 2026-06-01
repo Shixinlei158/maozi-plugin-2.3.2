@@ -238,7 +238,7 @@ class App:
         dashboard = Frame(self.root, bg="#ffffff", padx=12, pady=8, relief="ridge", bd=1)
         dashboard.pack(fill="x", padx=8, pady=(8, 4))
         Label(dashboard, text="运行状态", bg="#ffffff", font=("Microsoft YaHei", 10, "bold")).grid(
-            row=0, column=0, columnspan=4, sticky="w", pady=(0, 4)
+            row=0, column=0, columnspan=5, sticky="w", pady=(0, 4)
         )
 
         self._cdp_label = Label(dashboard, text="CDP: 检测中...", bg="#ffffff", font=("Microsoft YaHei", 9))
@@ -249,6 +249,21 @@ class App:
         self._plugin_label.grid(row=1, column=2, padx=(0, 10), sticky="w")
         self._seller_label = Label(dashboard, text="卖家: 检测中...", bg="#ffffff", font=("Microsoft YaHei", 9))
         self._seller_label.grid(row=1, column=3, sticky="w")
+        self._db_profile_var = tk.StringVar(value="ts-lx")
+        db_profile_frame = Frame(dashboard, bg="#ffffff")
+        db_profile_frame.grid(row=1, column=4, sticky="w")
+        Label(db_profile_frame, text="DB:", bg="#ffffff", font=("Microsoft YaHei", 9)).pack(side="left")
+        db_combo = ttk.Combobox(db_profile_frame, textvariable=self._db_profile_var,
+                                values=["local", "ts-lx", "frp-lx"],
+                                state="readonly", width=8, font=("Microsoft YaHei", 9))
+        db_combo.pack(side="left", padx=(2, 4))
+        db_combo.bind("<<ComboboxSelected>>", self._on_db_profile_changed)
+        self._sync_btn = Button(db_profile_frame, text="同步", bg="#95a5a6", fg="white",
+                               font=("Microsoft YaHei", 8), width=4, padx=2, pady=0,
+                               command=self._sync_db_structure, relief="flat")
+        self._sync_btn.pack(side="left")
+        self._db_status_label = Label(db_profile_frame, text="", bg="#ffffff", font=("Microsoft YaHei", 8), fg="#27ae60")
+        self._db_status_label.pack(side="left", padx=(4, 0))
         self._mode_label = Label(dashboard, text="模式: 待机", bg="#ffffff", font=("Microsoft YaHei", 9))
         self._mode_label.grid(row=2, column=0, padx=(0, 10), sticky="w")
         self._phase_label = Label(dashboard, text="阶段: 未开始", bg="#ffffff", font=("Microsoft YaHei", 9))
@@ -721,7 +736,13 @@ class App:
     def _set_status(self, info: dict[str, Any]):
         db_text = info.get("db", "")
         db_color = "#27ae60" if "已连接" in db_text else "#e74c3c"
-        self._db_label.config(text=f"DB:  {db_text}", fg=db_color)
+        try:
+            from . import db as _db_module
+            profile = _db_module.get_active_profile()
+            profile_name = profile.name
+        except Exception:
+            profile_name = "?"
+        self._db_label.config(text=f"DB[{profile_name}]: {db_text}", fg=db_color)
 
         cdp_text = info.get("cdp", "")
         cdp_color = "#27ae60" if "已连接" in cdp_text else "#e74c3c"
@@ -732,6 +753,46 @@ class App:
         self._plugin_label.config(text=f"插件: {plugin_text}", fg=plugin_color)
 
         self._seller_label.config(text=f"卖家池: {info.get('seller_count', 0)}", fg="#2c3e50")
+
+    def _on_db_profile_changed(self, event=None):
+        key = self._db_profile_var.get()
+        from . import db
+        ok = db.set_active_profile(key)
+        if ok:
+            self._db_status_label.config(text="已切换", fg="#27ae60")
+            self._append_log(f">>> DB已切换至: {key}\n")
+            self._poll_status()
+        else:
+            self._db_status_label.config(text="失败", fg="#e74c3c")
+
+    def _sync_db_structure(self):
+        key = self._db_profile_var.get()
+        self._sync_btn.config(state="disabled", text="同步中...")
+        self._db_status_label.config(text="同步中...", fg="#f39c12")
+        def run():
+            try:
+                from .config import DB_PROFILES
+                from .db_sync import sync_table_structure
+                target = DB_PROFILES.get(key)
+                if target is None:
+                    self.root.after(0, lambda: self._db_status_label.config(text="无效配置", fg="#e74c3c"))
+                    return
+                result = sync_table_structure(target)
+                self.root.after(0, lambda: self._sync_done(result))
+            except Exception as e:
+                self.root.after(0, lambda: self._db_status_label.config(text=f"失败: {e}", fg="#e74c3c"))
+            finally:
+                self.root.after(0, lambda: self._sync_btn.config(state="normal", text="同步"))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _sync_done(self, result):
+        if result["success"]:
+            self._db_status_label.config(text=f"OK ({result['files']}文件)", fg="#27ae60")
+            self._append_log(f">>> 表结构同步完成: {result['files']}文件, {result['statements']}条SQL\n")
+        else:
+            self._db_status_label.config(text=f"失败({len(result['errors'])}错)", fg="#e74c3c")
+            for e in result["errors"][:3]:
+                self._append_log(f">>> 同步错误: {e}\n")
 
     def _reset_runtime_stats(self):
         self._runtime_stats = {
