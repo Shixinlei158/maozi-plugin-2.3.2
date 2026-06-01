@@ -282,6 +282,7 @@ class App:
             ("卖家列表循环扩充 (推荐)", "expand-seller-backlog"),
             ("榜单采集网络", "crawl-top-list-network"),
             ("种子池处理", "expand-seed-pool-network"),
+            ("多类目采集网络", "multi-category-network"),
         ]
         for idx, (text, value) in enumerate(modes):
             ttk.Radiobutton(
@@ -340,6 +341,8 @@ class App:
                        tooltip="勾选后将重试状态为deferred的任务")
         self._add_param(lf_seed, 1, 0, "种子来源过滤", "source_type", "top_list", "str",
                        tooltip="过滤特定来源的种子。可选：top_list, manual")
+        self._add_param(lf_seed, 1, 1, "强制重试淘汰项", "retry_rejected_now", False, "bool", 
+                       tooltip="勾选后将重试状态为rejected/done的任务")
 
         # 榜单组 — 按毛子ERP实际页面字段顺序排列
         lf_top = tk.LabelFrame(tab_adv, text="榜单采集专属配置（留空=不过滤，顺序与网页一致）", bg="#ffffff", padx=8, pady=8)
@@ -419,6 +422,14 @@ class App:
                        tooltip="排序依据字段。常用：sold_count(月销), avg_price(均价), create_date(上架时间)")
         self._add_param(lf_top, 14, 0, "排序方向", "sort_order", "", "str",
                        tooltip="排序方向：asc(升序), desc(降序)")
+
+        # 多类目组
+        lf_mcat = tk.LabelFrame(tab_adv, text="多类目采集专属配置", bg="#ffffff", padx=8, pady=8)
+        lf_mcat.grid(row=2, column=0, sticky="ew", padx=4, pady=4)
+        self._add_param(lf_mcat, 0, 0, "类目层级", "category_level", "1", "str",
+                       tooltip="遍历哪一层的类目：1(一级,26个), 2(二级,393个), 3(三级,1429个), all(全部)")
+        self._add_param(lf_mcat, 0, 1, "每类目页数", "pages_per_category", "5", "int", min_val=1, max_val=100,
+                       tooltip="每个类目拉取多少页。全部类目页数=类目数×每类目页数")
 
         # 按钮区
         btn_frame = Frame(control_panel, bg="#ffffff")
@@ -530,9 +541,10 @@ class App:
         # Enable/Disable based on mode
         is_seed = (mode == "expand-seed-pool-network")
         is_top = (mode == "crawl-top-list-network")
+        is_mcat = (mode == "multi-category-network")
         
         # 种子专属
-        for key in ["retry_failed_now", "retry_deferred_now", "source_type"]:
+        for key in ["retry_failed_now", "retry_deferred_now", "retry_rejected_now", "source_type"]:
             state = "normal" if is_seed else "disabled"
             if isinstance(self._param_widgets[key], ttk.Checkbutton):
                 if state == "disabled":
@@ -542,7 +554,7 @@ class App:
             else:
                 self._param_widgets[key].configure(state=state)
                 
-        # 榜单专属
+        # 榜单专属（榜单采集和多类目采集共用）
         for key in [
             "main_type", "page_size", "page_from", "page_to",
             "sku", "name", "category1", "category2", "category3",
@@ -558,7 +570,12 @@ class App:
             "create_date_from", "create_date_to",
             "sort_by", "sort_order",
         ]:
-            state = "normal" if is_top else "disabled"
+            state = "normal" if (is_top or is_mcat) else "disabled"
+            self._param_widgets[key].configure(state=state)
+
+        # 多类目专属
+        for key in ["category_level", "pages_per_category"]:
+            state = "normal" if is_mcat else "disabled"
             self._param_widgets[key].configure(state=state)
 
     def _validate_params(self) -> dict[str, Any]:
@@ -640,6 +657,7 @@ class App:
             "seed_sku_workers": str(settings.seed_sku_workers),
             "retry_failed_now": False,
             "retry_deferred_now": False,
+            "retry_rejected_now": False,
             "source_type": "top_list",
             "main_type": "hot",
             "page_size": "50",
@@ -656,6 +674,7 @@ class App:
             "avg_delivery_days_min": "", "avg_delivery_days_max": "",
             "create_date_from": "", "create_date_to": "",
             "sort_by": "", "sort_order": "",
+            "category_level": "1", "pages_per_category": "5",
         }
         for k, v in defaults.items():
             if k in self._param_vars:
@@ -1022,6 +1041,7 @@ class App:
                 cmd_expand_seller_backlog,
                 cmd_crawl_top_list_network,
                 cmd_expand_seed_pool_network,
+                cmd_multi_category_network,
                 set_verbose,
             )
 
@@ -1070,11 +1090,35 @@ class App:
                 setattr(args, "skip_process", False)
                 setattr(args, "retry_failed_now", False)
                 setattr(args, "retry_deferred_now", False)
+                setattr(args, "retry_rejected_now", False)
                 cmd_crawl_top_list_network(args)
             elif mode == "expand-seed-pool-network":
                 if not hasattr(args, "query_key"):
                     setattr(args, "query_key", "")
                 cmd_expand_seed_pool_network(args)
+            elif mode == "multi-category-network":
+                # 多类目模式复用榜单参数
+                for f in ["sku", "name", "category1", "category2", "category3", "sales_min", "sales_max",
+                         "day_sales_min", "day_sales_max", "avg_price_min", "avg_price_max",
+                         "sales_dynamics_min", "sales_dynamics_max", "conv_to_cart_pdp_min",
+                         "conv_to_cart_pdp_max", "conv_to_cart_search_min", "conv_to_cart_search_max",
+                         "sales_schema", "sold_sum_min", "sold_sum_max",
+                         "weight_min", "weight_max",
+                         "avg_delivery_days_min", "avg_delivery_days_max",
+                         "create_date_from", "create_date_to", "sort_by", "sort_order"]:
+                    if not hasattr(args, f):
+                        setattr(args, f, "")
+                setattr(args, "refresh_hours", 24)
+                setattr(args, "force_refresh", False)
+                setattr(args, "skip_process", False)
+                setattr(args, "retry_failed_now", False)
+                setattr(args, "retry_deferred_now", False)
+                setattr(args, "retry_rejected_now", False)
+                if not hasattr(args, "category_level"):
+                    setattr(args, "category_level", "1")
+                if not hasattr(args, "pages_per_category"):
+                    setattr(args, "pages_per_category", "5")
+                cmd_multi_category_network(args)
             else:
                 print(f"未知采集模式: {mode}")
         except SystemExit:
