@@ -305,10 +305,10 @@ class App:
         self._notebook.add(tab_adv, text="模式专属配置")
 
         # Tab 1: 核心调度
-        self._add_param(tab_core, 0, 0, "每轮处理上限 (process_limit)", "process_limit", "1", "int", min_val=1, max_val=10000,
-                       tooltip="每轮任务最多处理的SKU或卖家数量。生产长跑建议：1")
-        self._add_param(tab_core, 0, 1, "最大爬取深度 (max_depth)", "max_depth", "0", "int", min_val=-1, max_val=100,
-                       tooltip="0表示按数据库卖家池逐轮循环；跟卖卖家会入库后由后续轮次继续采集。生产长跑建议：0")
+        self._add_param(tab_core, 0, 0, "每轮处理上限 (process_limit)", "process_limit", "0", "int", min_val=0, max_val=10000,
+                       tooltip="每轮任务最多处理的SKU或卖家数量。0=不限制，一次处理全部到期种子")
+        self._add_param(tab_core, 0, 1, "最大爬取深度 (max_depth)", "max_depth", "-1", "int", min_val=-1, max_val=100,
+                       tooltip="-1=无限递归，所有跟卖卖家都会被爬。谨慎使用")
         self._add_param(tab_core, 1, 0, "最大卖家数 (max_sellers)", "max_sellers", "0", "int", min_val=0, max_val=100000, 
                        tooltip="本轮最多访问的卖家数量。0表示不限制；生产长跑建议：0")
         self._add_param(tab_core, 1, 1, "单店SKU上限 (sku_limit)", "sku_limit", "0", "int", min_val=0, max_val=100000, 
@@ -627,8 +627,8 @@ class App:
             return
             
         defaults = {
-            "process_limit": "1",
-            "max_depth": "0",
+            "process_limit": "0",
+            "max_depth": "-1",
             "max_sellers": "0",
             "sku_limit": "0",
             "max_scrolls": "8",
