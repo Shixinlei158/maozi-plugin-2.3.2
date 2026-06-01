@@ -919,7 +919,7 @@ class BrowserOzonClient:
                 self._sticky_pages.pop(handler_name, None)
 
             if handler_name == "_fetch_top_list_page":
-                # 优先复用已有的毛子榜单页（避免新建空白页导致SPA Token识别延迟）
+                # 优先复用已有的毛子榜单页
                 for page in pages:
                     try:
                         if page.url.startswith(MAOZI_SELECTION_ORIGIN):
@@ -927,6 +927,20 @@ class BrowserOzonClient:
                             return page, False
                     except Exception:
                         continue
+                # 复用任意页面（避免CDP模式下new_page()失败）
+                if pages:
+                    page = pages[0]
+                    try:
+                        if not page.is_closed():
+                            self._sticky_pages[handler_name] = page
+                            return page, False
+                    except Exception:
+                        pass
+                # 最后才尝试新建
+                page = context.new_page()
+                self._mark_managed_page(page, handler_name)
+                self._sticky_pages[handler_name] = page
+                return page, False
 
             if handler_name == "_fetch_maozi_sku3":
                 extension_prefix = f"chrome-extension://{self.extension_id}/"

@@ -1,0 +1,2 @@
+[   37944ms] [ERROR] Access to fetch at 'http://127.0.0.1:9224/json' from origin 'null' has been blocked by CORS policy: The request client is not a secure context and the resource is in more-private address space `loopback`. @ about:blank:0
+[   37944ms] [ERROR] Failed to load resource: net::ERR_FAILED @ http://127.0.0.1:9224/json:0

@@ -1,0 +1,16 @@
+[    1936ms] [LOG] Sat May 30 2026 16:40:24 GMT+0800 (中国标准时间) @ https://g.alicdn.com/AWSC/fireyejs/1.219.2/fireyejs.js:1
+[    2751ms] [LOG] check iframe start @ https://erp.91miaoshou.com/api/app/views/static/js/home/home.js?2026051501:46
+[    2751ms] [LOG] is top window  true @ https://erp.91miaoshou.com/api/app/views/static/js/home/home.js?2026051501:48
+[    2751ms] [LOG] undefined @ https://erp.91miaoshou.com/api/app/views/static/js/home/home.js?2026051501:52
+[    2751ms] [LOG] Window @ https://erp.91miaoshou.com/api/app/views/static/js/home/home.js?2026051501:53
+[    2751ms] [LOG] https://erp.91miaoshou.com/?redirect=%2Fcommon_collect_box%2Findex%3FfetchType%3DaliCrossSaleSports @ https://erp.91miaoshou.com/api/app/views/static/js/home/home.js?2026051501:54
+[    2751ms] [LOG] check iframe end @ https://erp.91miaoshou.com/api/app/views/static/js/home/home.js?2026051501:55
+[    2757ms] [LOG] register bind event @ https://erp.91miaoshou.com/api/app/views/static/js/home/register.js?2026051501:31
+[    2762ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ https://erp.91miaoshou.com/?redirect=%2Fcommon_collect_box%2Findex%3FfetchType%3DaliCrossSaleSports:0
+[    2763ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ https://erp.91miaoshou.com/?redirect=%2Fcommon_collect_box%2Findex%3FfetchType%3DaliCrossSaleSports:0
+[    2763ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ https://erp.91miaoshou.com/?redirect=%2Fcommon_collect_box%2Findex%3FfetchType%3DaliCrossSaleSports:0
+[    2763ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ https://erp.91miaoshou.com/?redirect=%2Fcommon_collect_box%2Findex%3FfetchType%3DaliCrossSaleSports:0
+[    2763ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ https://erp.91miaoshou.com/?redirect=%2Fcommon_collect_box%2Findex%3FfetchType%3DaliCrossSaleSports:0
+[    2763ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ https://erp.91miaoshou.com/?redirect=%2Fcommon_collect_box%2Findex%3FfetchType%3DaliCrossSaleSports:0
+[    2763ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ https://erp.91miaoshou.com/?redirect=%2Fcommon_collect_box%2Findex%3FfetchType%3DaliCrossSaleSports:0
+[    2763ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ https://erp.91miaoshou.com/?redirect=%2Fcommon_collect_box%2Findex%3FfetchType%3DaliCrossSaleSports:0

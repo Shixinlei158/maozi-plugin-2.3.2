@@ -1,0 +1,12 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e10]:
+      - combobox "在 Google 中搜索或输入网址" [ref=e11]
+      - generic:
+        - button "语音搜索" [ref=e13] [cursor=pointer]
+        - button "按图搜索" [ref=e15] [cursor=pointer]
+    - button "自定义 Chrome" [ref=e18] [cursor=pointer]:
+      - generic [ref=e19]:
+        - img
+      - generic [ref=e21]: 自定义 Chrome
+  - img [ref=e23]

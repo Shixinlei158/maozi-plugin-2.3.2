@@ -1,0 +1,189 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e6]:
+      - text: 
+      - button "免费使用" [ref=e8] [cursor=pointer]
+    - generic [ref=e17]:
+      - link [ref=e19] [cursor=pointer]:
+        - /url: https://erp.91miaoshou.com/account/payment/resourcePackage
+      - link [ref=e21] [cursor=pointer]:
+        - /url: https://erp.91miaoshou.com/common_collect_box/local_pallet/northAmericaAreaSource/alibabaFenXiao?utm_source=260519alibaba
+      - link [ref=e23] [cursor=pointer]:
+        - /url: https://erp.91miaoshou.com/platforms/shopeesep.html?utm_source=260514msgwsy
+      - link [ref=e25] [cursor=pointer]:
+        - /url: https://seller.kuajingmaihuo.com/login/register?erpSource=miaoshou
+    - generic [ref=e26]:
+      - button "Go to slide 1" [ref=e27] [cursor=pointer]
+      - button "Go to slide 2" [ref=e28] [cursor=pointer]
+      - button "Go to slide 3" [ref=e29] [cursor=pointer]
+      - button "Go to slide 4" [ref=e30] [cursor=pointer]
+    - generic [ref=e32]:
+      - generic [ref=e33]: 登录
+      - textbox "手机号/子账号/邮箱" [ref=e35]
+      - textbox "密码" [ref=e38]
+      - textbox "请输入验证码" [active] [ref=e42]
+      - button "立即登录" [ref=e43] [cursor=pointer]
+      - generic [ref=e45]:
+        - generic [ref=e46] [cursor=pointer]: 注册
+        - generic [ref=e48] [cursor=pointer]: 忘记密码
+    - generic [ref=e49]:
+      - generic [ref=e50]:
+        - generic [ref=e51]: OFFICIAI AUTHORIZATION
+        - generic [ref=e52]: 主流跨境电商平台官方授权
+      - button "更多平台" [ref=e123] [cursor=pointer]
+    - generic [ref=e124]:
+      - generic [ref=e125]:
+        - generic [ref=e126]: TRUST CHOICE
+        - generic [ref=e127]: 众多跨境卖家的信赖选择
+      - generic [ref=e128]:
+        - generic [ref=e129]:
+          - generic [ref=e130]: "110"
+          - generic [ref=e131]:
+            - generic [ref=e132]: 万+
+            - generic [ref=e133]: 跨境电商卖家
+        - generic [ref=e134]:
+          - generic [ref=e135]: "30"
+          - generic [ref=e136]:
+            - generic [ref=e137]: +
+            - generic [ref=e138]: 跨境电商平台
+        - generic [ref=e139]:
+          - generic [ref=e140]: "490"
+          - generic [ref=e141]:
+            - generic [ref=e142]: +
+            - generic [ref=e143]: 物流服务商
+        - generic [ref=e144]:
+          - generic [ref=e145]: "800"
+          - generic [ref=e146]:
+            - generic [ref=e147]: +
+            - generic [ref=e148]: 仓储服务商
+        - generic [ref=e149]:
+          - generic [ref=e150]: "100"
+          - generic [ref=e151]:
+            - generic [ref=e152]: +
+            - generic [ref=e153]: 跨境货代
+        - generic [ref=e154]:
+          - generic [ref=e155]: "600"
+          - generic [ref=e156]:
+            - generic [ref=e157]: 万+
+            - generic [ref=e158]: 每日处理订单量
+    - generic [ref=e159]:
+      - generic [ref=e160]:
+        - generic [ref=e161]: INTEGRATED MANAGFMENT
+        - generic [ref=e162]: 9大核心模块打造集成化管理
+      - generic [ref=e163]:
+        - generic [ref=e165] [cursor=pointer]:
+          - generic [ref=e167]: 多平台多店上货
+          - generic [ref=e168]: 支持采集100+货源平台商品，快速上货到多个平台多个店铺，支持批量翻译图片、一键自动抠图、批量添加水印等
+          - button "查看详情" [ref=e169]
+        - generic [ref=e171] [cursor=pointer]:
+          - generic [ref=e173]: 多平台选品分析
+          - generic [ref=e174]: 快速洞察TikTok Shop、Shopee、Temu、Lazada等平台热销产品，并支持一键采集上货，同时提供数据分析工具，精准锁定TikTok热销类目、带货达人、热门视频等资源
+          - button "查看详情" [ref=e175]
+        - generic [ref=e177] [cursor=pointer]:
+          - generic [ref=e179]: 海量优质货盘资源
+          - generic [ref=e180]: 直连跨境及本土优质货盘资源，跨境货盘已对接1688跨境货盘、淘宝跨境等平台；本土货盘覆盖美区、欧区、东南亚等市场，汇聚阿里美区现货盘、Doba等优质货源，支持一键采集上货
+          - button "查看详情" [ref=e181]
+        - generic [ref=e183] [cursor=pointer]:
+          - generic [ref=e185]: AI聚合与营销工具
+          - generic [ref=e186]: AI智能优化Listing，生成标题、描述、商品图，智能去除水印，模特换脸换衣。可创建折扣、优惠券、满减满赠等营销活动，支持批量创建与多店同步管理
+          - button "查看详情" [ref=e187]
+        - generic [ref=e189] [cursor=pointer]:
+          - generic [ref=e191]: 产品精准定价
+          - generic [ref=e192]: 结合多重价格因素，生成精准定价模板，可一键引用、批量生成售价，避免亏损，保证利润
+          - button "查看详情" [ref=e193]
+        - generic [ref=e195] [cursor=pointer]:
+          - generic [ref=e197]: 高效订单处理
+          - generic [ref=e198]: 支持多货源平台一键采购、调用库存、代打包、打印面单、拣货单、分拣等多种操作，可处理售后订单，标记黑名单
+          - button "查看详情" [ref=e199]
+        - generic [ref=e201] [cursor=pointer]:
+          - generic [ref=e203]: 智能库存与物流协同
+          - generic [ref=e204]: 全链路库存监控，智能补货预警，支持自营仓、第三方仓、平台仓。整合各平台支持承运的物流商，实现便捷化申请运单、物流跟踪及运费预估
+          - button "查看详情" [ref=e205]
+        - generic [ref=e207] [cursor=pointer]:
+          - generic [ref=e209]: 多维度利润报表
+          - generic [ref=e210]: 基于店铺、订单、产品、员工等维度，整合销量、成本、利润、回款等数据可视化分析，清晰了解经营状况
+          - button "查看详情" [ref=e211]
+        - generic [ref=e213] [cursor=pointer]:
+          - generic [ref=e215]: 托管模式集成管理
+          - generic [ref=e216]: 集成管理TikTok Shop、Temu、SHEIN、AliExpress等平台半托管及全托管模式，支持合规标签模板一键套用、仓库库存智能联动、PDA扫描发货等
+          - button "查看详情" [ref=e217]
+    - generic [ref=e218]:
+      - generic [ref=e219]:
+        - generic [ref=e220]: ORDERING SCHFMF
+        - generic [ref=e221]: 个性化灵活订购方案
+      - generic [ref=e223]:
+        - generic [ref=e224] [cursor=pointer]: 按店铺订购
+        - generic [ref=e225] [cursor=pointer]: 按套餐订购
+      - generic [ref=e228]:
+        - generic [ref=e229]: 按店铺订购
+        - generic [ref=e230]: 低至4.5元/店铺/月，适用单平台多店铺卖家
+        - generic [ref=e233] [cursor=pointer]: 立即订购
+    - generic [ref=e235]:
+      - generic [ref=e236]: 全面提升运营效率，从使用妙手开始
+      - generic [ref=e237]: 简单、高效，助您开启轻量化运营之路
+      - generic [ref=e238] [cursor=pointer]: 立即免费使用
+    - generic [ref=e239]:
+      - generic [ref=e240]:
+        - generic [ref=e241]:
+          - generic [ref=e244]: 妙手ERP，为深圳呈云网络科技有限公司旗下产品，已服务110万+跨境电商卖家，致力于为跨境电商卖家提供采集、刊登、定价、营销、订单、仓储、采购、物流、代打包、财务、客服等一体化运营服务，成就高效跨境电商。
+          - generic [ref=e245]:
+            - generic [ref=e246]: 客户服务
+            - generic [ref=e247]:
+              - link "关于妙手" [ref=e249] [cursor=pointer]:
+                - /url: /about-us.html
+              - link "订购价格" [ref=e251] [cursor=pointer]:
+                - /url: /price.html
+              - link "帮助中心" [ref=e253] [cursor=pointer]:
+                - /url: https://erp.91miaoshou.com/help_center/index.html
+              - link "联系我们" [ref=e255] [cursor=pointer]:
+                - /url: /contact-us.html
+          - generic [ref=e256]:
+            - generic [ref=e257]: 活动与资源
+            - generic [ref=e258]:
+              - link "活动专区" [ref=e260] [cursor=pointer]:
+                - /url: /activity.html
+              - link "生态合作" [ref=e262] [cursor=pointer]:
+                - /url: /partners.html
+              - link "平台入驻" [ref=e264] [cursor=pointer]:
+                - /url: /platforms.html
+              - link "妙手跨境学院" [ref=e266] [cursor=pointer]:
+                - /url: /blog/index.html
+        - generic [ref=e267]:
+          - generic [ref=e268]:
+            - paragraph [ref=e270]: "14759016685"
+            - paragraph [ref=e272]: 深圳市龙岗区坂田街道岗头社区天安云谷产业园一期3栋B座1802
+          - generic [ref=e273]:
+            - generic [ref=e274]: 妙手官方公众号
+            - generic [ref=e276]: 扫码关注妙手动态
+          - generic [ref=e277]:
+            - generic [ref=e278]: 官方卖家社群
+            - generic [ref=e280]: 扫码拉你进群
+      - generic [ref=e287]:
+        - generic [ref=e288]:
+          - generic [ref=e289]: "友情链接:"
+          - link "EasyBoss" [ref=e291] [cursor=pointer]:
+            - /url: https://www.easyboss.com/?utm_source=msdibudaohang
+          - link "爱商聊" [ref=e293] [cursor=pointer]:
+            - /url: https://www.askchat.com/?utm_source=msdibudaohang
+          - link "货小易" [ref=e295] [cursor=pointer]:
+            - /url: https://tms.huoxiaoyi.com/?utm_source=msyqlj
+          - link "GreatBoss" [ref=e297] [cursor=pointer]:
+            - /url: https://www.greatboss.com/
+          - link "顶妙WMS" [ref=e299] [cursor=pointer]:
+            - /url: https://www.topwms.com/
+          - link "谷仓海外仓" [ref=e301] [cursor=pointer]:
+            - /url: https://www.goodcang.com/
+          - link "易可图" [ref=e303] [cursor=pointer]:
+            - /url: https://www.yiketu.com/
+          - link "Shopee" [ref=e305] [cursor=pointer]:
+            - /url: https://shopee.cn/
+        - generic [ref=e306]:
+          - link "Copyright© 2026 深圳呈云网络科技有限公司 版权所有" [ref=e308] [cursor=pointer]:
+            - /url: ""
+          - link "粤ICP备18124050号" [ref=e310] [cursor=pointer]:
+            - /url: https://beian.miit.gov.cn/
+          - link "用户服务协议" [ref=e312] [cursor=pointer]:
+            - /url: https://erp.91miaoshou.com/user-service.html
+          - link "隐私条款" [ref=e314] [cursor=pointer]:
+            - /url: https://erp.91miaoshou.com/privacy-policy.html
+  - text: "* * * * * * * * * * *"

@@ -88,6 +88,7 @@ class App:
 
         self._url_var = StringVar(value=DEFAULT_TARGET_URL)
         self._batch_limit_var = StringVar(value="10")
+        self._select_full_subject_var = tk.BooleanVar(value=True)
 
         self._build_ui()
         self._load_config()
@@ -262,6 +263,23 @@ class App:
             ttk.Checkbutton(filter_frame, text=f, variable=var).grid(
                 row=1 + idx // 4, column=idx % 4, padx=(0, 12), sticky="w"
             )
+
+        # 框选整体主体选项
+        subject_row = Frame(control_panel, bg="#ffffff")
+        subject_row.grid(row=5, column=0, sticky="w", pady=(8, 0))
+
+        self._select_full_subject_cb = ttk.Checkbutton(
+            subject_row,
+            text="框选整个主体（自动全选图片区域替代智能框选）",
+            variable=self._select_full_subject_var,
+        )
+        self._select_full_subject_cb.pack(side="left", padx=(0, 8))
+
+        ToolTip(
+            self._select_full_subject_cb,
+            "勾选后，RPA 会在图搜前点击「框选主体」并拖选整张图片，\n"
+            "替代 1688 的智能框选（智能框选往往只框局部）。",
+        )
 
         # 日志区
         log_frame = Frame(self.root, bg="#ffffff", padx=12, pady=8, relief="ridge", bd=1)
@@ -588,6 +606,12 @@ class App:
             iframe.locator('span:has-text("确定")').first.click()
             page.wait_for_timeout(8000)
 
+            # 框选整个主体（替代1688智能框选）
+            if self._select_full_subject_var.get():
+                self._log_queue.put(f"[SKU {sku_id}] 开始框选整个主体...\n")
+                self._select_full_subject(iframe, page)
+                page.wait_for_timeout(3000)
+
             # 设置筛选条件
             dropdowns = iframe.locator('[class*="select"]').all()
             for dropdown in dropdowns:
@@ -621,84 +645,6 @@ class App:
         except Exception as e:
             self._log_queue.put(f"图搜执行失败: {e}\n")
             return False
-        """执行单次图搜 RPA"""
-        captured = []
-
-        try:
-            pw = sync_playwright().start()
-            browser = pw.chromium.connect_over_cdp(CDP_URL)
-            context = browser.contexts[0] if browser.contexts else browser.new_context()
-
-            def on_response(response):
-                if IMAGE_SEARCH_API in response.url:
-                    try:
-                        body = response.json()
-                        captured.append(body)
-                        self._log_queue.put("捕获到图搜响应\n")
-                    except Exception as e:
-                        self._log_queue.put(f"解析响应失败: {e}\n")
-
-            context.on("response", on_response)
-
-            # 导航到采集页面
-            page = context.new_page()
-            target_url = self._url_var.get().strip() or DEFAULT_TARGET_URL
-            self._log_queue.put(f"正在打开: {target_url}\n")
-            page.goto(target_url, wait_until="networkidle", timeout=60000)
-            self._log_queue.put(f"页面已加载: {page.title()}\n")
-
-            # 等待 iframe 加载
-            self._log_queue.put("等待 iframe 加载...\n")
-            iframe = None
-            for attempt in range(10):
-                page.wait_for_timeout(2000)
-                self._log_queue.put(f"检测 frames ({attempt+1}/10)...\n")
-                for f in page.frames:
-                    self._log_queue.put(f"  frame: {f.url[:80]}\n")
-                    if "aibuy.1688.com" in f.url or "1688" in f.url:
-                        iframe = f
-                        self._log_queue.put(f"找到 1688 iframe: {f.url[:80]}\n")
-                        break
-                if iframe:
-                    break
-
-            if not iframe:
-                self._log_queue.put("未找到 1688 iframe\n")
-                return False
-
-            # 执行图片搜索
-            if not self._image_search(page, iframe, image_url):
-                return False
-
-            page.wait_for_timeout(5000)
-
-            # 设置筛选条件
-            if filters:
-                self._select_filters(iframe, page, filters)
-
-            # 等待响应
-            page.wait_for_timeout(5000)
-
-            if captured:
-                resp = captured[-1]
-                image_links, detail_urls = self._parse_response(resp)
-                self._save_to_db(sku_id, image_links, detail_urls, resp)
-                self._log_queue.put(
-                    f"完成: {len(image_links)} 张图, {len(detail_urls)} 个链接\n"
-                )
-                return True
-            else:
-                self._log_queue.put("未捕获到响应\n")
-                return False
-
-        except Exception as e:
-            self._log_queue.put(f"图搜执行失败: {e}\n")
-            return False
-        finally:
-            try:
-                pw.stop()
-            except Exception:
-                pass
 
     def _image_search(self, page, iframe, image_url: str) -> bool:
         """在iframe弹窗中执行图片搜索"""
@@ -757,6 +703,121 @@ class App:
                 pass
         except Exception as e:
             self._log_queue.put(f"设置筛选条件失败: {e}\n")
+
+    def _select_full_subject(self, iframe, page):
+        """点击「框选主体」后直接修改 cropper-selection 属性全选图片
+
+        1688 裁剪组件是 Web Component:
+        - 点击「框选主体」后弹出 ant-popover，内含 <cropper-canvas>
+        - <cropper-selection> 有 x/y/width/height 属性控制选区
+        - <cropper-shade> 是半透明遮罩，和 selection 坐标同步
+        - 直接修改这些属性 + 点击确定即可全选
+
+        流程:
+        1. 点击「框选主体」按钮
+        2. 等待 popover 出现
+        3. 修改 cropper-selection/cropper-shade 属性为全画布 (0,0,fullW,fullH)
+        4. 点击确定
+        5. 验证 mask 已扩大到全图
+        """
+        try:
+            cut_btn = iframe.locator('[class*="cropper-cut-btn"]').first
+            if not cut_btn.is_visible(timeout=3000):
+                self._log_queue.put("框选主体按钮不可见，跳过\n")
+                return False
+
+            self._log_queue.put("点击「框选主体」按钮...\n")
+            cut_btn.click()
+            page.wait_for_timeout(2000)
+
+            # 等待 popover 中的 cropper-selection 出现
+            self._log_queue.put("等待裁剪 popover...\n")
+            if not iframe.locator('cropper-selection').first.is_visible(timeout=5000):
+                self._log_queue.put("裁剪 popover 未出现，回退到默认行为\n")
+                return False
+
+            # 直接修改 cropper-selection 和 cropper-shade 属性为全画布
+            self._log_queue.put("设置选区为全图...\n")
+            modify_result = iframe.evaluate("""() => {
+                const canvas = document.querySelector('cropper-canvas');
+                const selection = document.querySelector('cropper-selection');
+                const shade = document.querySelector('cropper-shade');
+                const moveHandle = document.querySelector('cropper-handle[action="move"]');
+
+                if (!canvas || !selection || !shade) {
+                    return { error: 'missing elements' };
+                }
+
+                const canvasRect = canvas.getBoundingClientRect();
+                const fullW = canvasRect.width;
+                const fullH = canvasRect.height;
+
+                // 设置 selection 为全画布
+                selection.setAttribute('x', '0');
+                selection.setAttribute('y', '0');
+                selection.setAttribute('width', String(fullW));
+                selection.setAttribute('height', String(fullH));
+                selection.style.transform = 'translate(0px, 0px)';
+                selection.style.width = fullW + 'px';
+                selection.style.height = fullH + 'px';
+
+                // 设置 shade 匹配
+                shade.setAttribute('x', '0');
+                shade.setAttribute('y', '0');
+                shade.setAttribute('width', String(fullW));
+                shade.setAttribute('height', String(fullH));
+                shade.style.transform = 'translate(0px, 0px)';
+                shade.style.width = fullW + 'px';
+                shade.style.height = fullH + 'px';
+
+                // 移动手柄也填满
+                if (moveHandle) {
+                    moveHandle.style.width = fullW + 'px';
+                    moveHandle.style.height = fullH + 'px';
+                }
+
+                // 派发 change 事件通知组件
+                selection.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+                selection.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+
+                return {
+                    fullW: Math.round(fullW), fullH: Math.round(fullH),
+                    selAttrs: { x: selection.getAttribute('x'), y: selection.getAttribute('y'),
+                                w: selection.getAttribute('width'), h: selection.getAttribute('height') }
+                };
+            }""")
+            self._log_queue.put(f"修改属性结果: {json.dumps(modify_result, ensure_ascii=False)}\n")
+            page.wait_for_timeout(500)
+
+            # 点击 popover footer 中的确定按钮
+            self._log_queue.put("点击确定保存选区...\n")
+            footer = iframe.locator('[class*="cropper-popover-footer"]')
+            try:
+                confirm = footer.locator('text=确定').first
+                if confirm.is_visible(timeout=3000):
+                    confirm.click()
+                    page.wait_for_timeout(2000)
+                    self._log_queue.put("已点击确定\n")
+                else:
+                    self._log_queue.put("未找到确定按钮\n")
+            except Exception as e:
+                self._log_queue.put(f"点击确定失败: {e}\n")
+
+            # 验证 mask 已扩大
+            mask_result = iframe.evaluate("""() => {
+                const mask = document.querySelector('[class*="cropper-image-mask"]');
+                if (!mask) return null;
+                const r = mask.getBoundingClientRect();
+                return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+            }""")
+            self._log_queue.put(f"选区遮罩尺寸: {json.dumps(mask_result, ensure_ascii=False)}\n")
+
+            return True
+
+        except Exception as e:
+            self._log_queue.put(f"框选主体失败: {e}\n")
+            return False
+
 
     # ========== 数据库操作 ==========
 
@@ -952,6 +1013,7 @@ class App:
                 "url": self._url_var.get(),
                 "batch_limit": self._batch_limit_var.get(),
                 "filters": {k: v.get() for k, v in self._filter_vars.items()},
+                "select_full_subject": self._select_full_subject_var.get(),
             }
             with open(GUI_CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
@@ -974,6 +1036,8 @@ class App:
                 for k, v in config["filters"].items():
                     if k in self._filter_vars:
                         self._filter_vars[k].set(v)
+            if "select_full_subject" in config:
+                self._select_full_subject_var.set(config["select_full_subject"])
         except Exception:
             pass
 

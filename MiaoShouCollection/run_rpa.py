@@ -3,7 +3,7 @@
 业务逻辑：
 1. 从数据库批量获取待图搜的SKU
 2. 连接浏览器，打开一个页面
-3. 对每个SKU执行：图搜→筛选→保存→切换tab复位页面
+3. 对每个SKU执行：图搜→框选全图(可选)→筛选→保存→切换tab复位页面
 """
 
 import json
@@ -24,6 +24,8 @@ DB_CONFIG = {
 
 IMAGE_SEARCH_API = "mtop.com.alibaba.global.select.aibuy.image.search"
 FILTERS = ["一件代发", "24H发货", "件重尺已校准"]
+
+SELECT_FULL_SUBJECT = True
 
 
 def get_pending_skus(limit: int):
@@ -113,6 +115,107 @@ def reset_page(iframe, page):
     return None
 
 
+def select_full_subject(iframe, page):
+    """点击「框选主体」后直接修改 cropper-selection 属性全选图片
+
+    1688 裁剪组件是 Web Component:
+    - 点击「框选主体」后弹出 ant-popover，内含 <cropper-canvas>
+    - <cropper-selection> 有 x/y/width/height 属性控制选区
+    - 直接修改这些属性 + 点击确定即可全选
+    """
+    try:
+        cut_btn = iframe.locator('[class*="cropper-cut-btn"]').first
+        if not cut_btn.is_visible(timeout=3000):
+            print("[框选] 框选主体按钮不可见，跳过")
+            return False
+
+        print("[框选] 点击「框选主体」按钮")
+        cut_btn.click()
+        page.wait_for_timeout(2000)
+
+        # 等待 popover 中的 cropper-selection 出现
+        if not iframe.locator('cropper-selection').first.is_visible(timeout=5000):
+            print("[框选] 裁剪 popover 未出现，回退到默认行为")
+            return False
+
+        # 直接修改 cropper-selection 和 cropper-shade 属性为全画布
+        print("[框选] 设置选区为全图...")
+        modify_result = iframe.evaluate("""() => {
+            const canvas = document.querySelector('cropper-canvas');
+            const selection = document.querySelector('cropper-selection');
+            const shade = document.querySelector('cropper-shade');
+            const moveHandle = document.querySelector('cropper-handle[action="move"]');
+
+            if (!canvas || !selection || !shade) {
+                return { error: 'missing elements' };
+            }
+
+            const canvasRect = canvas.getBoundingClientRect();
+            const fullW = canvasRect.width;
+            const fullH = canvasRect.height;
+
+            selection.setAttribute('x', '0');
+            selection.setAttribute('y', '0');
+            selection.setAttribute('width', String(fullW));
+            selection.setAttribute('height', String(fullH));
+            selection.style.transform = 'translate(0px, 0px)';
+            selection.style.width = fullW + 'px';
+            selection.style.height = fullH + 'px';
+
+            shade.setAttribute('x', '0');
+            shade.setAttribute('y', '0');
+            shade.setAttribute('width', String(fullW));
+            shade.setAttribute('height', String(fullH));
+            shade.style.transform = 'translate(0px, 0px)';
+            shade.style.width = fullW + 'px';
+            shade.style.height = fullH + 'px';
+
+            if (moveHandle) {
+                moveHandle.style.width = fullW + 'px';
+                moveHandle.style.height = fullH + 'px';
+            }
+
+            selection.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+            selection.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+
+            return {
+                fullW: Math.round(fullW), fullH: Math.round(fullH),
+                selAttrs: { x: selection.getAttribute('x'), y: selection.getAttribute('y'),
+                            w: selection.getAttribute('width'), h: selection.getAttribute('height') }
+            };
+        }""")
+        print(f"[框选] 修改属性结果: {json.dumps(modify_result, ensure_ascii=False)}")
+        page.wait_for_timeout(500)
+
+        # 点击 popover footer 中的确定按钮
+        footer = iframe.locator('[class*="cropper-popover-footer"]')
+        try:
+            confirm = footer.locator('text=确定').first
+            if confirm.is_visible(timeout=3000):
+                confirm.click()
+                page.wait_for_timeout(2000)
+                print("[框选] 已点击确定")
+            else:
+                print("[框选] 未找到确定按钮")
+        except Exception as e:
+            print(f"[框选] 点击确定失败: {e}")
+
+        # 验证 mask 已扩大
+        mask_result = iframe.evaluate("""() => {
+            const mask = document.querySelector('[class*="cropper-image-mask"]');
+            if (!mask) return null;
+            const r = mask.getBoundingClientRect();
+            return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+        }""")
+        print(f"[框选] 选区遮罩尺寸: {json.dumps(mask_result, ensure_ascii=False)}")
+
+        return True
+
+    except Exception as e:
+        print(f"[框选] 失败: {e}")
+        return False
+
+
 def do_image_search(iframe, page, image_url, captured):
     """执行一次图搜完整流程，捕获的响应追加到captured列表"""
     start_count = len(captured)
@@ -142,6 +245,12 @@ def do_image_search(iframe, page, image_url, captured):
     except Exception as e:
         print(f"[错误] 点击确定失败: {e}")
         return captured
+
+    # 框选整个主体（替代1688智能框选）
+    if SELECT_FULL_SUBJECT:
+        print("[框选] 开始框选整个主体...")
+        select_full_subject(iframe, page)
+        page.wait_for_timeout(3000)
 
     # 设置筛选条件
     try:

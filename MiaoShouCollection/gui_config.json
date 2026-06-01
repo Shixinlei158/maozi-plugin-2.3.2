@@ -1,0 +1,15 @@
+{
+  "url": "https://erp.91miaoshou.com/common_collect_box/index?fetchType=aliCrossSaleSports",
+  "batch_limit": "10",
+  "filters": {
+    "一件代发": true,
+    "包邮": false,
+    "先采后付": false,
+    "三无包赔": false,
+    "24H发货": true,
+    "48H发货": false,
+    "件重尺已校准": false,
+    "7天无理由退货": false
+  },
+  "select_full_subject": true
+}

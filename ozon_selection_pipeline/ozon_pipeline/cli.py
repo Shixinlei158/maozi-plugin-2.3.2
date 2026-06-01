@@ -1988,6 +1988,8 @@ def add_top_list_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sales-schema", default="FBS")
     parser.add_argument("--sold-sum-min", default="")
     parser.add_argument("--sold-sum-max", default="")
+    parser.add_argument("--weight-min", default="")
+    parser.add_argument("--weight-max", default="")
     parser.add_argument("--avg-delivery-days-min", default="")
     parser.add_argument("--avg-delivery-days-max", default="")
     parser.add_argument("--create-date-from", default=settings.top_list_default_create_date_from)
@@ -2002,6 +2004,8 @@ def add_top_list_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--force-refresh", action="store_true")
     parser.add_argument("--skip-process", action="store_true")
     parser.add_argument("--retry-failed-now", action="store_true")
+    parser.add_argument("--retry-deferred-now", action="store_true")
+    parser.add_argument("--retry-rejected-now", action="store_true")
 
 
 def load_seller_offers(sku: str, browser: BrowserOzonClient) -> list[dict[str, Any]]:
@@ -2825,7 +2829,6 @@ def build_parser() -> argparse.ArgumentParser:
     crawl_top_list_network.add_argument("--max-scrolls", type=int, default=8)
     crawl_top_list_network.add_argument("--seed-sku-workers", type=int, default=settings.seed_sku_workers)
     crawl_top_list_network.add_argument("--seller-sku-workers", type=int, default=settings.seller_sku_workers)
-    crawl_top_list_network.add_argument("--retry-deferred-now", action="store_true")
     add_browser_options(crawl_top_list_network, include_headless=True)
     crawl_top_list_network.set_defaults(func=cmd_crawl_top_list_network)
 

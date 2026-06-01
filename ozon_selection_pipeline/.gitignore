@@ -14,6 +14,8 @@ data/
 vendor/
 
 # Temporary artifacts
-tmp-*.png
 *.log
 .gui_first_run
+gui_config.json
+gui_startup.log
+.playwright-mcp/
