@@ -628,42 +628,115 @@ def _close_extra_dashboard_pages(context: Any) -> None:
             pass
 
 
+def check_auth_state(context: Any) -> dict[str, Any]:
+    """全面检查当前浏览器认证状态"""
+    result = {"maozi_logged_in": False, "plugin_logged_in": False,
+              "ozon_page_count": 0, "maozi_page_count": 0, "login_page_count": 0,
+              "details": []}
+    for page in context.pages:
+        if page.is_closed():
+            continue
+        url = page.url or ''
+        if '/auth/login' in url:
+            result["login_page_count"] += 1
+            continue
+        if 'ozon.maozierp.com' in url:
+            result["maozi_page_count"] += 1
+            try:
+                has_token = page.evaluate(
+                    "() => { const a=JSON.parse(localStorage.getItem('maozierp-core-access')||'{}'); return !!a.accessToken; }"
+                )
+                if has_token:
+                    result["maozi_logged_in"] = True
+            except Exception:
+                pass
+            continue
+        if 'ozon.ru' in url:
+            result["ozon_page_count"] += 1
+            try:
+                state = page.evaluate("""() => {
+                    const host = document.querySelector('MAOZIERP-UI');
+                    if (!host || !host.shadowRoot) return 'NO_PLUGIN';
+                    for (const btn of host.shadowRoot.querySelectorAll('button')) {
+                        if (btn.innerText?.trim() === '请登录') return 'NEED_LOGIN';
+                    }
+                    return 'LOGGED_IN';
+                }""")
+                if state == 'LOGGED_IN':
+                    result["plugin_logged_in"] = True
+                    result["details"].append("Ozon插件: 已登录")
+                elif state == 'NEED_LOGIN':
+                    result["details"].append("Ozon插件: 需要登录")
+            except Exception:
+                pass
+            continue
+    result["details"].append(f"毛子网页: {'已登录' if result['maozi_logged_in'] else '未登录/Token缺失'}")
+    result["details"].append(f"页面统计: ozon={result['ozon_page_count']} maozi={result['maozi_page_count']} login={result['login_page_count']}")
+    return result
+
+
 def unified_login_recovery(context: Any, browser_client=None) -> bool:
     """统一登录恢复：依次尝试所有方法，失败则飞书通知。
     
     方法优先级：
-    1. ensure_authenticated（扫描所有页面的登录/弹窗）
-    2. 打开新登录页 → auto_login（滑块登录）
-    3. 全部失败 → 飞书告警
-    
-    Returns:
-        bool: True 如果任何方法成功
+    1. 刷新Ozon页面，检测插件"请登录" → 点击处理
+    2. ensure_authenticated（扫描所有页面的登录/弹窗）
+    3. 打开新登录页 → auto_login（滑块+凭证）
+    4. 全部失败 → 飞书告警
     """
     import os
 
-    print("[auth] 开始统一登录恢复...")
+    state = check_auth_state(context)
+    print(f"[auth] 当前状态: {state['details']}")
 
-    # 方法1: ensure_authenticated（处理已有登录页和插件弹窗）
-    print("[auth] 方法1: 扫描现有页面...")
-    ok = ensure_authenticated(context, max_retries=2)
-    if ok:
-        print("[auth] 方法1成功")
+    # 如果已登录 → 直接返回
+    if state["maozi_logged_in"] and state["plugin_logged_in"]:
+        print("[auth] 两侧均已登录，无需恢复")
         return True
 
-    # 方法2: 主动打开新登录页完成滑块登录
-    print("[auth] 方法2: 主动打开登录页...")
+    # 方法1: 刷新Ozon页面 + 点击插件"请登录"
+    print("[auth] 方法1: 刷新Ozon页面触发插件弹窗...")
+    for page in list(context.pages):
+        if page.is_closed():
+            continue
+        if 'ozon.ru' in (page.url or ''):
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(3000)
+            except Exception:
+                pass
+    # 再次检查并处理插件弹窗
+    for page in list(context.pages):
+        if page.is_closed():
+            continue
+        if 'ozon.ru' in (page.url or ''):
+            if handle_plugin_login_popup(page, context):
+                print("[auth] 方法1成功（插件弹窗）")
+                return True
+
+    # 方法2: ensure_authenticated
+    print("[auth] 方法2: 扫描所有页面...")
+    ok = ensure_authenticated(context, max_retries=2)
+    if ok:
+        print("[auth] 方法2成功")
+        return True
+
+    # 方法3: 主动打开新登录页
+    print("[auth] 方法3: 主动打开登录页完成滑块登录...")
     try:
         username = os.environ.get("MAOZI_USERNAME") or None
         password = os.environ.get("MAOZI_PASSWORD") or None
         login_page = context.new_page()
         ok = auto_login(login_page, username=username, password=password)
         if ok:
-            print("[auth] 方法2成功")
-            # 登录后再点一下插件弹窗（"登录成功后再点击请登录"）
-            for page in context.pages:
+            print("[auth] 方法3成功")
+            # 登录后再次点击插件弹窗
+            for page in list(context.pages):
                 if page.is_closed():
                     continue
                 if 'ozon.ru' in (page.url or ''):
+                    page.reload(wait_until="domcontentloaded", timeout=30000)
+                    page.wait_for_timeout(3000)
                     handle_plugin_login_popup(page, context)
             return True
         try:
@@ -671,7 +744,13 @@ def unified_login_recovery(context: Any, browser_client=None) -> bool:
         except Exception:
             pass
     except Exception as e:
-        print(f"[auth] 方法2异常: {e}")
+        print(f"[auth] 方法3异常: {e}")
+
+    # 最终状态检查
+    state = check_auth_state(context)
+    if state["maozi_logged_in"] or state["plugin_logged_in"]:
+        print(f"[auth] 部分恢复成功: {state['details']}")
+        return True
 
     # 全部失败 → 飞书告警
     print("[auth] 所有登录恢复方法均失败，发送飞书通知...")
