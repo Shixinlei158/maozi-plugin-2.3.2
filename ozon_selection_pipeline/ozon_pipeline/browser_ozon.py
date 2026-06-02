@@ -1296,19 +1296,63 @@ class BrowserOzonClient:
         skus: list[str],
         concurrency: int,
     ) -> dict[str, dict[str, Any]]:
-        # 从 localStorage 取 token（榜单API和SKU3共用同一个JWT）
+        # ============================================================
+        # Token 获取：两路径互为备份，实际为同一个 JWT
+        #   Path A (优先): chrome.storage.local['maozierp-token'] ← 插件写入
+        #   Path B (降级): localStorage['maozierp-core-access'].accessToken ← 网页写入
+        # 榜单API仅用 Path B，SKU3 二者皆可。保留双路径确保任一端登录即可工作。
+        # ============================================================
         if self._cached_maozi_token is None:
-            self._ensure_maozi_selection_ready(page)
-            token_result = page.evaluate("""
-                () => {
-                    try {
-                        const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
-                        return access.accessToken || null;
-                    } catch(e) { return null; }
-                }
-            """)
-            if token_result:
-                self._cached_maozi_token = token_result
+            token = None
+
+            # Path A: Chrome 插件存储（需打开扩展弹窗页面）
+            try:
+                target_url = self._extension_popup_url()
+                try:
+                    current = page.url or ""
+                except Exception:
+                    current = ""
+                if current != target_url:
+                    page.goto(target_url, wait_until="load", timeout=15000)
+                    page.wait_for_timeout(800)
+
+                token_result = page.evaluate("""
+                    async () => {
+                        let token = null;
+                        for (let i = 0; i < 8 && !token; i++) {
+                            if (i > 0) await new Promise(r => setTimeout(r, 500));
+                            try {
+                                const s = await chrome.storage.local.get(["maozierp-token"]);
+                                token = s["maozierp-token"];
+                            } catch(e) {}
+                        }
+                        return token || null;
+                    }
+                """)
+                if token_result:
+                    token = token_result
+            except Exception:
+                pass
+
+            # Path B: 毛子网页 localStorage（与榜单API同源，最可靠）
+            if not token:
+                try:
+                    self._ensure_maozi_selection_ready(page)
+                    token_result = page.evaluate("""
+                        () => {
+                            try {
+                                const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
+                                return access.accessToken || null;
+                            } catch(e) { return null; }
+                        }
+                    """)
+                    if token_result:
+                        token = token_result
+                except Exception:
+                    pass
+
+            if token:
+                self._cached_maozi_token = token
             else:
                 return {}
 
@@ -1641,6 +1685,8 @@ class BrowserOzonClient:
                     "毛子ERP Token缺失。请在浏览器中手动打开 https://ozon.maozierp.com 登录后重试。"
                     f"当前页面: {current_url}"
                 )
+        # 榜单API Token: localStorage['maozierp-core-access'].accessToken (Path B, 网页写入)
+        # 与SKU3的Path B同源，是同一个JWT
         return page.evaluate(
             """
             async ({ filters, pageNo, pageSize, timeoutMs }) => {
