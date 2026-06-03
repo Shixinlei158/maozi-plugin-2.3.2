@@ -391,8 +391,8 @@ class App:
                        tooltip="按SKU编号精确搜索")
         self._add_param(lf_top, 5, 2, "月销量≥", "sales_min", "3", "str",
                        tooltip="月销量最小值。默认：3")
-        self._add_param(lf_top, 6, 0, "月销量≤", "sales_max", "65", "str",
-                       tooltip="月销量最大值。默认：65")
+        self._add_param(lf_top, 6, 0, "月销量≤", "sales_max", "200", "str",
+                       tooltip="月销量最大值。默认：200")
         self._add_param(lf_top, 6, 1, "日均销量≥", "day_sales_min", "", "str",
                        tooltip="日均销量最小值")
         self._add_param(lf_top, 6, 2, "日均销量≤", "day_sales_max", "", "str",
@@ -679,7 +679,7 @@ class App:
             "page_from": "1",
             "page_to": "100",
             "sku": "", "name": "", "category1": "", "category2": "", "category3": "",
-            "sales_min": "3", "sales_max": "65", "sold_sum_min": "", "sold_sum_max": "",
+            "sales_min": "3", "sales_max": "200", "sold_sum_min": "", "sold_sum_max": "",
             "day_sales_min": "", "day_sales_max": "",
             "avg_price_min": "500", "avg_price_max": "10000",
             "conv_to_cart_pdp_min": "", "conv_to_cart_pdp_max": "",
