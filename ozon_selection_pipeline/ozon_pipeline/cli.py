@@ -2821,6 +2821,7 @@ def build_parser() -> argparse.ArgumentParser:
     crawl_top_list_network.add_argument("--max-scrolls", type=int, default=8)
     crawl_top_list_network.add_argument("--seed-sku-workers", type=int, default=settings.seed_sku_workers)
     crawl_top_list_network.add_argument("--seller-sku-workers", type=int, default=settings.seller_sku_workers)
+    crawl_top_list_network.add_argument("--seller-page-workers", type=int, default=settings.seller_page_workers)
     add_browser_options(crawl_top_list_network, include_headless=True)
     crawl_top_list_network.set_defaults(func=cmd_crawl_top_list_network)
 
