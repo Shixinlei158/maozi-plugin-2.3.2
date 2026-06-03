@@ -1668,7 +1668,7 @@ def list_due_seller_shops(process_limit: int = 0) -> list[dict[str, Any]]:
           )
         ORDER BY
           CASE WHEN last_collected_at IS NULL THEN 0 ELSE 1 END ASC,
-          COALESCE(next_collect_after, TIMESTAMP('1970-01-01 00:00:00')) ASC,
+          CASE WHEN last_collected_at IS NULL THEN UNIX_TIMESTAMP(created_at) ELSE -UNIX_TIMESTAMP(COALESCE(next_collect_after, TIMESTAMP('1970-01-01'))) END DESC,
           seller_key ASC
     """
     params: dict[str, Any] = {}
