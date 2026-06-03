@@ -731,8 +731,7 @@ def bulk_upsert_sku_results(
             )
     
     if universe_entries:
-        # 这里需要一个新的 bulk 函数来处理完整的 universe 更新
-        bulk_upsert_sku_universe_full(universe_entries)
+        bulk_upsert_sku_universe_full(universe_entries, source=source)
 
     return {
         "total": len(results),
@@ -743,9 +742,10 @@ def bulk_upsert_sku_results(
     }
 
 
-def bulk_upsert_sku_universe_full(entries: list[dict[str, Any]]) -> None:
+def bulk_upsert_sku_universe_full(entries: list[dict[str, Any]], *, source: str = "") -> None:
     rows = []
     now = datetime.now()
+    skip_raw = source.startswith("seller_home:")
     for entry in entries:
         sku = entry["sku"]
         product_data = entry.get("product_data") or {}
@@ -773,8 +773,8 @@ def bulk_upsert_sku_universe_full(entries: list[dict[str, Any]]) -> None:
             "formal_rule_name": selection_result.rule_name if selection_result else None,
             "is_formal_qualified": 1 if (selection_result and selection_result.matched) else 0,
             "formal_rule_reason": selection_result.summary if selection_result else None,
-            "product_raw_json": json_dumps(product_data.get("raw")) if product_data.get("raw") else None,
-            "maozi_raw_json": json_dumps(entry.get("metric_raw")) if entry.get("metric_raw") else None,
+            "product_raw_json": json_dumps(product_data.get("raw")) if product_data.get("raw") and not skip_raw else None,
+            "maozi_raw_json": json_dumps(entry.get("metric_raw")) if entry.get("metric_raw") and not skip_raw else None,
             "last_seen_at": now,
             "last_product_collected_at": now if product_data else None,
             "last_maozi_collected_at": now if metric else None,
