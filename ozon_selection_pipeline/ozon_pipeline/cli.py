@@ -296,24 +296,6 @@ _PRICE_MIN_CNY = Decimal("20")
 _PRICE_MAX_CNY = Decimal("800")
 _RUB_RATE = Decimal(str(settings.rub_to_cny_rate))
 
-_KNOWN_BRANDS = {
-    "adidas", "nike", "puma", "reebok", "new balance", "samsung", "apple", "xiaomi",
-    "huawei", "sony", "lg", "panasonic", "philips", "bosch", "siemens", "dyson",
-    "kitchenaid", "tefal", "asus", "lenovo", "hp", "dell", "canon", "nikon",
-    "lego", "barbie", "fisher-price", "hasbro", "mattel", "zara", "h&m", "uniqlo",
-    "gucci", "prada", "chanel", "louis vuitton", "hermes", "dior", "versace",
-    "armani", "hugo boss", "calvin klein", "tommy hilfiger", "ralph lauren",
-    "under armour", "columbia", "the north face", "patagonia", "levi's", "levis",
-    "wrangler", "gap", "old navy", "converse", "vans", "skechers", "crocs",
-    "timberland", "dr martens", "birkenstock", "ugg", "clarks", "ecco",
-    "logitech", "razer", "corsair", "hyperx", "steelseries", "jbl", "bose",
-    "beats", "marshall", "sennheiser", "beyerdynamic", "akg", "shure",
-    "gillette", "braun", "oral-b", "colgate", "nivea", "l'oreal", "maybelline",
-    "este lauder", "clinique", "lancome", "shiseido", "sk-ii", "kiehl's",
-    "ikea", "muji", "staub", "le creuset", "zwilling", "wusthof", "victorinox",
-    "yandex", "ozon", "wildberries", "detmir", "detsky mir",
-}
-
 
 def _seller_item_passes_prefilter(item: dict[str, Any]) -> bool:
     """卖家主页商品廉价预筛：在SKU3获取前先行过滤"""
@@ -335,25 +317,21 @@ def _seller_item_passes_prefilter(item: dict[str, Any]) -> bool:
     return True
 
 
-def _seller_looks_branded(items: list[dict[str, Any]], sample_size: int = 20) -> bool:
-    """检查卖家前N个商品是否全部含品牌 → 判定为品牌卖家"""
+def _seller_looks_branded(items: list[dict[str, Any]], sample_size: int = 24) -> bool:
+    """检查卖家前N个商品是否全部有品牌 → 判定为品牌卖家直接跳过。
+    判别逻辑：标题含拉丁字母（英文品牌名）即为有品牌，纯西里尔/中文/数字为无品牌。"""
     if not items:
         return False
     sample = items[:sample_size]
-    unbranded_count = 0
     for it in sample:
-        title = (it.get("title") or "").lower()
-        # 标题中包含已知品牌 → 有品牌
-        has_known_brand = any(brand in title for brand in _KNOWN_BRANDS)
-        if has_known_brand:
-            continue
-        # 标题短且无明显品牌特征 → 可能无品牌
-        unbranded_count += 1
-    # 所有样本都有品牌 → 品牌卖家
-    return unbranded_count == 0
+        title = (it.get("title") or "").strip()
+        # 含任何拉丁字母 → 有品牌
+        if not any(c.isascii() and c.isalpha() for c in title):
+            return False  # 发现无品牌商品，不跳过
+    # 全部含拉丁字母 → 品牌卖家
+    return True
 
-
-def run_seller_network(
+_BRANDED_SAMPLE_PAGES = 3  # 先取3页(24条)判断是否品牌卖家
     queue: deque[dict[str, Any]],
     *,
     browser: BrowserOzonClient,
@@ -427,7 +405,7 @@ def run_seller_network(
             except Exception as e:
                 vlog("periodic auth check error:", e, prefix="auth")
 
-        # 批量出队
+        # 批量出队，先浅爬3页判断品牌
         crawl_batch: list[dict[str, Any]] = []
         while queue and len(crawl_batch) < seller_page_workers and processed_sellers + len(crawl_batch) < max_sellers:
             seller = queue.popleft()
@@ -442,12 +420,43 @@ def run_seller_network(
         if not crawl_batch:
             continue
 
-        # 并发爬取
+        # 阶段1：浅爬（3页），判断是否品牌卖家
         crawl_start = time.perf_counter()
+        shallow_map: dict[str, Any] = {}
+        for s in crawl_batch:
+            try:
+                shallow_map[s["url"]] = load_seller_home_products(s["url"], browser, max_scrolls=_BRANDED_SAMPLE_PAGES)
+            except Exception:
+                shallow_map[s["url"]] = None
+
+        # 过滤品牌卖家
+        full_crawl_batch = []
+        for s in crawl_batch:
+            url = s["url"]
+            result = shallow_map.get(url)
+            if result is None:
+                continue
+            items = result.get("items") or []
+            if items and _seller_looks_branded(items):
+                print(f"  skip branded seller (shallow): {url[:80]} | name={s.get('name','?')}")
+                from .repository import upsert_seller_shop as _upsert_shop
+                _upsert_shop(url, name=s.get("name"))
+                db.execute(
+                    "UPDATE seller_shops SET next_collect_after='2099-12-31 23:59:59' WHERE seller_key=%(key)s",
+                    {"key": seller_key(url)},
+                )
+                processed_sellers += 1
+                continue
+            full_crawl_batch.append(s)
+
+        if not full_crawl_batch:
+            continue
+
+        # 阶段2：非品牌卖家全量爬取（异步并发）
         crawl_map: dict[str, Any] = {}
-        if len(crawl_batch) > 1 and seller_page_workers > 1:
-            with ThreadPoolExecutor(max_workers=len(crawl_batch)) as ex:
-                futures = {ex.submit(_crawl_seller_concurrent, s["url"]): s for s in crawl_batch}
+        if len(full_crawl_batch) > 1 and seller_page_workers > 1:
+            with ThreadPoolExecutor(max_workers=len(full_crawl_batch)) as ex:
+                futures = {ex.submit(_crawl_seller_concurrent, s["url"]): s for s in full_crawl_batch}
                 for f in as_completed(futures):
                     s = futures[f]
                     try:
@@ -456,7 +465,7 @@ def run_seller_network(
                         vlog("batch crawl failed:", {"url": s["url"], "error": str(exc)[:120]}, prefix="seller")
                         crawl_map[s["url"]] = None
         else:
-            s = crawl_batch[0]
+            s = full_crawl_batch[0]
             try:
                 crawl_map[s["url"]] = load_seller_home_products(s["url"], browser, max_scrolls=max_scrolls)
             except Exception:
@@ -512,18 +521,6 @@ def run_seller_network(
             items = [it for it in items if _seller_item_passes_prefilter(it)]
             if raw_count != len(items):
                 print(f"  prefilter: {raw_count}→{len(items)} (过滤{raw_count - len(items)}条)")
-            # 品牌卖家检测：前N个商品全部有品牌 → 永久冻结卖家
-            if items and _seller_looks_branded(items):
-                print(f"  skip branded seller: {url[:80]} | name={name or '?'} | 全部品牌商品")
-                # 永久冻结：设置next_collect_after为2099年
-                from .repository import upsert_seller_shop as _upsert_shop
-                _upsert_shop(url, name=name)
-                db.execute(
-                    "UPDATE seller_shops SET next_collect_after='2099-12-31 23:59:59' WHERE seller_key=%(key)s",
-                    {"key": seller_key(url)},
-                )
-                processed_sellers += 1
-                continue
             source = result.get("source") or "unknown"
             vlog(
                 "seller page detail:",
