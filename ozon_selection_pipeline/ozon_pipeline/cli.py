@@ -1720,40 +1720,32 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
     page_to = max(page_from, int(args.page_to))
     page_size = max(1, min(int(args.page_size), 50))
     refresh_hours = max(1, int(args.refresh_hours))
-    cached_run = None if args.force_refresh else get_recent_top_list_run(query_key, refresh_hours)
     run_id = start_top_list_run(
-        query_key,
-        args.main_type,
-        filters,
-        page_from=page_from,
-        page_to=page_to,
-        page_size=page_size,
+        query_key, args.main_type, filters,
+        page_from=page_from, page_to=page_to, page_size=page_size,
     )
+    t_start = time.perf_counter()
     pages_fetched = 0
     items_fetched = 0
-    t_start = time.perf_counter()
+    total_seeds = 0
+    total_qualified = 0
+    total_sellers = 0
     try:
         with browser.session():
+            # === 阶段1: 逐页拉取+即时处理 ===
+            cached_run = None if args.force_refresh else get_recent_top_list_run(query_key, refresh_hours)
             if cached_run:
-                print(
-                    "reuse cached top-list snapshot:",
-                    f"run_id={cached_run['id']}",
-                    f"started_at={cached_run['started_at']}",
-                    f"within_hours={refresh_hours}",
-                )
+                print(f"reuse cached top-list snapshot: run_id={cached_run['id']} within_hours={refresh_hours}")
             else:
-                t_phase = time.perf_counter()
                 for page_no in range(page_from, page_to + 1):
                     t_page = time.perf_counter()
                     raw = browser.top_list_page(filters, page_no=page_no, page_size=page_size)
                     t_api = time.perf_counter()
                     if not raw.get("ok"):
-                        raise RuntimeError(
-                            f"top-list request failed on page {page_no}: HTTP {raw.get('status')} {raw.get('text')}"
-                        )
+                        raise RuntimeError(f"top-list page {page_no} HTTP {raw.get('status')}")
                     body = raw.get("data") or {}
                     if body.get("code") != 1:
-                        raise RuntimeError(f"top-list API returned error on page {page_no}: {body}")
+                        raise RuntimeError(f"top-list API error page {page_no}: {body}")
                     payload = body.get("data") or {}
                     items = payload.get("data") or []
                     if not items:
@@ -1762,257 +1754,54 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                     t_db = time.perf_counter()
                     pages_fetched += 1
                     items_fetched += len(items)
-                    print(
-                        "top-list page:",
-                        page_no,
-                        f"/ {payload.get('last_page') or '?'}",
-                        "| items=",
-                        len(items),
-                        f"| api={t_api - t_page:.1f}s",
-                        f"| db={t_db - t_api:.1f}s",
-                    )
+                    print(f"top-list page: {page_no}/{payload.get('last_page','?')} | items={len(items)} | api={t_api-t_page:.1f}s | db={t_db-t_api:.1f}s")
+                    # 逐页即时处理：预筛+SKU3+种子判定+卖家扩展
+                    from .repository import top_list_snapshot_hash
+                    page_items = []
+                    for it in items:
+                        it_copy = dict(it)
+                        it_copy["query_key"] = query_key
+                        it_copy["snapshot_hash"] = top_list_snapshot_hash(it)
+                        page_items.append(it_copy)
+                    pf_result = [it for it in page_items if evaluate_top_list_prefilter(it, rule=TOP_LIST_SEED_RULE).matched]
+                    if pf_result:
+                        print(f"  page seeds: {len(page_items)}→{len(pf_result)} after prefilter")
+                        stats = expand_seed_pool_items(
+                            pf_result, browser=browser, maozi=maozi, source_type="top_list",
+                            max_depth=args.max_depth, max_sellers=args.max_sellers,
+                            sku_limit=args.sku_limit, max_scrolls=args.max_scrolls,
+                            seed_sku_workers=args.seed_sku_workers, seller_sku_workers=args.seller_sku_workers,
+                            prefetched_maozi=None,
+                        )
+                        total_seeds += stats["processed_skus"] + stats["prefiltered_skus"]
+                        total_qualified += stats["qualified_skus"]
+                        total_sellers += stats["seller_stats"]["processed_sellers"]
+                    else:
+                        print(f"  page seeds: {len(page_items)}→0 after prefilter")
                     last_page = int(payload.get("last_page") or page_no)
                     if page_no >= last_page:
                         break
-                t_pages_done = time.perf_counter()
-                print(f"phase: pages fetched | pages={pages_fetched} items={items_fetched} elapsed={t_pages_done - t_start:.1f}s")
 
-            cached_items, due_items = due_seed_pool_items(
-                query_key=query_key,
-                source_type="top_list",
-                process_limit=args.process_limit,
-                retry_failed_now=args.retry_failed_now,
-                retry_deferred_now=args.retry_deferred_now,
-                retry_rejected_now=args.retry_rejected_now,
-            )
+            finish_top_list_run(run_id, status="success", pages_fetched=pages_fetched, items_fetched=items_fetched,
+                               due_skus=total_seeds, processed_skus=total_seeds,
+                               qualified_skus=total_qualified, rejected_skus=0,
+                               seller_expansions=total_sellers)
 
-            print(
-                "top-list cache summary:",
-                f"query_key={query_key}",
-                f"cached_skus={len(cached_items)}",
-                f"due_skus={len(due_items)}",
-            )
+            # === 阶段2: 卖家后台循环消化 ===
+            if total_sellers > 0 or args.max_depth != 0:
+                print(f"phase: seller backlog | seeds_processed={total_seeds} qualified={total_qualified} running...")
+                cmd_expand_seller_backlog(args)
+            else:
+                print("no sellers expanded, skip seller backlog phase")
 
-            if args.skip_process:
-                finish_top_list_run(
-                    run_id,
-                    status="success",
-                    pages_fetched=pages_fetched,
-                    items_fetched=items_fetched,
-                    due_skus=len(due_items),
-                )
-                print("skip process enabled; only refreshed or reused top-list cache")
-                return
-
-            t_seed_start = time.perf_counter()
-            expansion_stats = expand_seed_pool_items(
-                due_items,
-                browser=browser,
-                maozi=maozi,
-                source_type="top_list",
-                max_depth=args.max_depth,
-                max_sellers=args.max_sellers,
-                sku_limit=args.sku_limit,
-                max_scrolls=args.max_scrolls,
-                seed_sku_workers=args.seed_sku_workers,
-                seller_sku_workers=args.seller_sku_workers,
-                prefetched_maozi=preflight_seed_pool_maozi_access(due_items, browser=browser, maozi=maozi),
-            )
-            t_seed_done = time.perf_counter()
-            seller_stats = expansion_stats["seller_stats"]
-
-            finish_top_list_run(
-                run_id,
-                status="success",
-                pages_fetched=pages_fetched,
-                items_fetched=items_fetched,
-                due_skus=len(due_items),
-                processed_skus=expansion_stats["processed_skus"] + expansion_stats["prefiltered_skus"],
-                qualified_skus=expansion_stats["qualified_skus"],
-                rejected_skus=expansion_stats["rejected_skus"],
-                seller_expansions=seller_stats["processed_sellers"],
-            )
-            print(
-                f"phase: seed processing done | processed={expansion_stats['processed_skus']} qualified={expansion_stats['qualified_skus']} sellers={seller_stats['processed_sellers']} elapsed={t_seed_done - t_seed_start:.1f}s | total={t_seed_done - t_start:.1f}s")
-            print(
-                "top-list crawl summary:",
-                f"seed_pool_skus={len(cached_items)}",
-                f"due_skus={len(due_items)}",
-                f"prefiltered_skus={expansion_stats['prefiltered_skus']}",
-                f"processed_skus={expansion_stats['processed_skus']}",
-                f"expanded_seed_skus={expansion_stats['qualified_skus']}",
-                f"rejected_skus={expansion_stats['rejected_skus']}",
-                f"failed_skus={expansion_stats['failed_skus']}",
-                f"deferred_seed_skus={expansion_stats['deferred_seed_skus']}",
-                f"strict_seed_inserts={expansion_stats['strict_seed_inserts']}",
-                f"top_list_offer_rows={expansion_stats['seller_offer_rows']}",
-                f"expanded_sellers={seller_stats['processed_sellers']}",
-                f"expanded_seller_skus={seller_stats['total_skus']}",
-            )
-    except Exception as exc:
-        finish_top_list_run(
-            run_id,
-            status="failed",
-            pages_fetched=pages_fetched,
-            items_fetched=items_fetched,
-            error_message=str(exc),
-        )
-        notify_collection_failed(
-            "榜单采集",
-            detail=f"榜单页采集过程中发生异常，run_id={run_id}",
-            extra_fields=[
-                {"label": "已抓取榜单页数", "value": str(pages_fetched)},
-                {"label": "已入库商品数", "value": str(items_fetched)},
-            ],
-            exc=exc,
-        )
+    except ManualInterventionRequired:
+        finish_top_list_run(run_id, status="failed", pages_fetched=pages_fetched, items_fetched=items_fetched)
         raise
-
-
-def cmd_multi_category_network(args: argparse.Namespace) -> None:
-    """多类目遍历采集模式：遍历ozon_categories指定层级的类目，每个类目独立拉取榜单并处理种子"""
-    browser = build_browser_client(args)
-    maozi = MaoziClient()
-    print_browser_runtime_notice(browser)
-    category_level = args.category_level  # 1, 2, 3, or "all"
-    pages_per_category = max(1, int(args.pages_per_category))
-    page_size = max(1, min(int(args.page_size), 50))
-
-    # 读取类目
-    level_condition = f"WHERE level = {int(category_level)}" if category_level != "all" else "WHERE level IN (1,2,3)"
-    categories = db.fetch_all(
-        f"""
-        SELECT category_id, name_zh, name_en, parent_id, level FROM ozon_categories
-        {level_condition}
-        ORDER BY level, category_id
-        """
-    )
-    print(f"类目遍历: level={'all' if category_level=='all' else category_level}, 共 {len(categories)} 个类目, 每个 {pages_per_category} 页")
-
-    # 预加载父类目名称
-    parent_names: dict[int, str] = {}
-    if category_level in (2, 3, "all"):
-        all_parents = db.fetch_all("SELECT category_id, name_zh FROM ozon_categories WHERE level IN (1,2)")
-        for p in all_parents:
-            parent_names[int(p["category_id"])] = p["name_zh"] or ""
-
-    t_start = time.perf_counter()
-    total_pages = 0
-    total_items = 0
-    total_seeds = 0
-    total_qualified = 0
-    total_sellers = 0
-
-    with browser.session():
-        for idx, cat in enumerate(categories):
-            cat_id = int(cat["category_id"])
-            cat_name = cat["name_zh"] or cat["name_en"] or ""
-            cat_level = int(cat["level"])
-            cat_parent = int(cat["parent_id"])
-
-            # 构建 category1/category2/category3
-            c1 = c2 = c3 = ""
-            if cat_level == 1:
-                c1 = cat_name
-            elif cat_level == 2:
-                c1 = parent_names.get(cat_parent, "")
-                c2 = cat_name
-            elif cat_level == 3:
-                # 需要祖父和父类目名
-                parent_row = db.fetch_one(
-                    "SELECT parent_id, name_zh FROM ozon_categories WHERE category_id=%s",
-                    (cat_parent,)
-                )
-                c2 = (parent_row["name_zh"] or "") if parent_row else ""
-                if parent_row:
-                    gp_id = int(parent_row["parent_id"])
-                    c1 = parent_names.get(gp_id, "")
-                c3 = cat_name
-
-            # 构建filters
-            filters = default_top_list_filters(args)
-            if c1:
-                filters["category1"] = c1
-            if c2:
-                filters["category2"] = c2
-            if c3:
-                filters["category3"] = c3
-            # 重新过滤空值
-            filters = {k: v for k, v in filters.items() if v != "" and v is not None
-                      and not (isinstance(v, list) and all(x == "" or x is None for x in v))}
-
-            query_key = top_list_query_key(filters)
-            cached_run = None if args.force_refresh else get_recent_top_list_run(query_key, args.refresh_hours)
-
-            run_id = start_top_list_run(query_key, args.main_type, filters,
-                                        page_from=1, page_to=pages_per_category, page_size=page_size)
-            cat_pages = 0
-            cat_items = 0
-            try:
-                if cached_run:
-                    print(f"[{idx+1}/{len(categories)}] {cat_name} (L{cat_level}) | 缓存命中 run_id={cached_run['id']}")
-                else:
-                    for page_no in range(1, pages_per_category + 1):
-                        raw = browser.top_list_page(filters, page_no=page_no, page_size=page_size)
-                        if not raw.get("ok"):
-                            print(f"  skip: page {page_no} HTTP {raw.get('status')}")
-                            break
-                        body = raw.get("data") or {}
-                        if body.get("code") != 1:
-                            print(f"  skip: page {page_no} API error {body}")
-                            break
-                        payload = body.get("data") or {}
-                        items = payload.get("data") or []
-                        if not items:
-                            break
-                        bulk_upsert_top_list_page(query_key, run_id, page_no, items)
-                        cat_pages += 1
-                        cat_items += len(items)
-                        last_page = int(payload.get("last_page") or page_no)
-                        if page_no >= last_page:
-                            break
-                    print(f"[{idx+1}/{len(categories)}] {cat_name} (L{cat_level}) | {cat_pages}页 {cat_items}条")
-
-                # 种子处理
-                cached_items, due_items = due_seed_pool_items(
-                    query_key=query_key, source_type="top_list",
-                    process_limit=args.process_limit,
-                    retry_failed_now=args.retry_failed_now,
-                    retry_deferred_now=args.retry_deferred_now,
-                    retry_rejected_now=args.retry_rejected_now,
-                )
-                if due_items and not args.skip_process:
-                    expansion_stats = expand_seed_pool_items(
-                        due_items, browser=browser, maozi=maozi, source_type="top_list",
-                        max_depth=args.max_depth, max_sellers=args.max_sellers,
-                        sku_limit=args.sku_limit, max_scrolls=args.max_scrolls,
-                        seed_sku_workers=args.seed_sku_workers, seller_sku_workers=args.seller_sku_workers,
-                        prefetched_maozi=preflight_seed_pool_maozi_access(due_items, browser=browser, maozi=maozi),
-                    )
-                    total_seeds += expansion_stats["processed_skus"] + expansion_stats["prefiltered_skus"]
-                    total_qualified += expansion_stats["qualified_skus"]
-                    total_sellers += expansion_stats["seller_stats"]["processed_sellers"]
-                else:
-                    expansion_stats = {"processed_skus": 0, "prefiltered_skus": 0, "qualified_skus": 0,
-                                      "rejected_skus": 0, "seller_stats": {"processed_sellers": 0}}
-
-                finish_top_list_run(run_id, status="success",
-                                   pages_fetched=cat_pages, items_fetched=cat_items,
-                                   due_skus=len(due_items),
-                                   processed_skus=expansion_stats["processed_skus"] + expansion_stats["prefiltered_skus"],
-                                   qualified_skus=expansion_stats["qualified_skus"],
-                                   rejected_skus=expansion_stats["rejected_skus"],
-                                   seller_expansions=total_sellers)
-                total_pages += cat_pages
-                total_items += cat_items
-
-            except Exception:
-                finish_top_list_run(run_id, status="failed",
-                                   pages_fetched=cat_pages, items_fetched=cat_items)
-                raise
-
-    t_total = time.perf_counter() - t_start
-    print(f"multi-category summary: categories={len(categories)} pages={total_pages} items={total_items} seeds_processed={total_seeds} qualified={total_qualified} sellers={total_sellers} elapsed={t_total:.1f}s")
+    except Exception as exc:
+        finish_top_list_run(run_id, status="failed", pages_fetched=pages_fetched, items_fetched=items_fetched,
+                           error_message=str(exc)[:512])
+        notify_collection_failed("榜单采集", detail=f"run_id={run_id}", exc=exc)
+        raise
 
 
 def cmd_show_browser_config(args: argparse.Namespace) -> None:
