@@ -1137,6 +1137,19 @@ def expand_seed_pool_items(
             seller_stats[key] += batch_stats[key]
         if remaining_seller_budget > 0:
             remaining_seller_budget = max(0, remaining_seller_budget - batch_stats["processed_sellers"])
+    pending_marks: list[dict[str, Any]] = []
+
+    def add_pool_mark(row, sku, status, reason=None, seller_offer_count=None, snapshot_hash=None):
+        pending_marks.append({
+            "source_type": source_type,
+            "query_key": str(row["query_key"]),
+            "sku": str(sku),
+            "snapshot_hash": snapshot_hash or row.get("snapshot_hash"),
+            "status": status,
+            "reason": (reason or "")[:512] or None,
+            "seller_offer_count": seller_offer_count,
+        })
+
     grouped_items: dict[str, list[dict[str, Any]]] = {}
     for item in due_items:
         sku = str(item["sku"])
@@ -1168,14 +1181,7 @@ def expand_seed_pool_items(
             rejected_skus += 1
             reason = f"种子预筛未命中: {prefilter.summary}"
             for row in rows:
-                mark_seed_pool_processed(
-                    str(row["query_key"]),
-                    sku,
-                    status="rejected",
-                    snapshot_hash=row.get("snapshot_hash"),
-                    reason=reason,
-                    source_type=source_type,
-                )
+                add_pool_mark(row, sku, "rejected", reason=reason)
             print(
                 "seed sku:",
                 sku,
@@ -1255,14 +1261,7 @@ def expand_seed_pool_items(
             error = result["error"]
             reason = f"种子处理失败: {error}"
             for row in rows:
-                mark_seed_pool_processed(
-                    str(row["query_key"]),
-                    sku,
-                    status="failed",
-                    snapshot_hash=row.get("snapshot_hash"),
-                    reason=reason,
-                    source_type=source_type,
-                )
+                add_pool_mark(row, sku, "failed", reason=reason)
             if needs_manual_intervention(reason):
                 raise ManualInterventionRequired(reason)
             print("seed sku:", sku, "| failed |", error)
@@ -1273,15 +1272,8 @@ def expand_seed_pool_items(
             deferred_seed_skus += 1
             reason = sku_result["rule_reason"]
             for row in rows:
-                mark_seed_pool_processed(
-                    str(row["query_key"]),
-                    sku,
-                    status="deferred",
-                    snapshot_hash=row.get("snapshot_hash"),
-                    reason=reason,
-                    seller_offer_count=sku_result["seller_offer_count"] or None,
-                    source_type=source_type,
-                )
+                add_pool_mark(row, sku, "deferred", reason=reason,
+                            seller_offer_count=sku_result["seller_offer_count"] or None)
             if needs_manual_intervention(reason):
                 raise ManualInterventionRequired(reason)
             print(
@@ -1318,15 +1310,8 @@ def expand_seed_pool_items(
             strict_seed_inserts += 1
 
         for row in rows:
-            mark_seed_pool_processed(
-                str(row["query_key"]),
-                sku,
-                status=status,
-                snapshot_hash=row.get("snapshot_hash"),
-                reason=sku_result["rule_reason"],
-                seller_offer_count=sku_result["seller_offer_count"] or None,
-                source_type=source_type,
-            )
+            add_pool_mark(row, sku, status, reason=sku_result["rule_reason"],
+                        seller_offer_count=sku_result["seller_offer_count"] or None)
         print(
             "seed sku:",
             sku,
@@ -1355,6 +1340,10 @@ def expand_seed_pool_items(
     finally:
         if worker_close is not None:
             worker_close()
+
+    # 批量写入种子状态
+    if pending_marks:
+        bulk_mark_seed_pool_processed(pending_marks)
 
     flush_pending_sellers()
 
