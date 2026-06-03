@@ -1534,6 +1534,16 @@ def mark_seed_pool_selected(query_key: str, sku: str, source_type: str = "top_li
     )
 
 
+def bulk_mark_seed_pool_selected(items: list[dict[str, str]]) -> int:
+    """批量更新 seed_pool_skus 选中时间"""
+    if not items:
+        return 0
+    return db.execute_many(
+        "UPDATE seed_pool_skus SET last_selected_at=CURRENT_TIMESTAMP WHERE source_type=%(source_type)s AND query_key=%(query_key)s AND sku=%(sku)s",
+        items
+    )
+
+
 def mark_seed_pool_processed(
     query_key: str,
     sku: str,

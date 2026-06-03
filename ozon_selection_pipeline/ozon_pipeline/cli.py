@@ -1150,12 +1150,20 @@ def expand_seed_pool_items(
             "seller_offer_count": seller_offer_count,
         })
 
+    group_selected: list[dict[str, str]] = []
     grouped_items: dict[str, list[dict[str, Any]]] = {}
     for item in due_items:
         sku = str(item["sku"])
         unique_skus.add(sku)
         grouped_items.setdefault(sku, []).append(item)
-        mark_seed_pool_selected(str(item["query_key"]), sku, source_type=source_type)
+        group_selected.append({
+            "source_type": source_type,
+            "query_key": str(item["query_key"]),
+            "sku": sku,
+        })
+    if group_selected:
+        from .repository import bulk_mark_seed_pool_selected
+        bulk_mark_seed_pool_selected(group_selected)
     vlog(
         "seed pool grouped:",
         f"unique_skus={len(grouped_items)}",
