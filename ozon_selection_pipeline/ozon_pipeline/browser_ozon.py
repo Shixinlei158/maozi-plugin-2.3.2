@@ -943,10 +943,10 @@ class BrowserOzonClient:
                 return page, False
 
             if handler_name == "_fetch_maozi_sku3":
-                extension_prefix = f"chrome-extension://{self.extension_id}/"
+                # 优先复用已有页面，避免新建空白页超时
                 for page in pages:
                     try:
-                        if page.url.startswith(extension_prefix):
+                        if page.url.startswith(MAOZI_SELECTION_ORIGIN):
                             self._sticky_pages[handler_name] = page
                             return page, False
                     except Exception:
@@ -1174,122 +1174,35 @@ class BrowserOzonClient:
         }
 
     def _fetch_maozi_sku3(self, page: Any, sku: str) -> dict[str, Any]:
-        errors: list[str] = []
-
-        try:
-            target_url = self._extension_popup_url()
-            current_url = ""
-            try:
-                current_url = page.url or ""
-            except Exception:
-                current_url = ""
-            if current_url != target_url:
-                page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(300)
-            result = page.evaluate(
-                """
-                async ({ sku, pluginVersion }) => {
-                  const storage = await chrome.storage.local.get(["maozierp-token"]);
-                  const token = storage["maozierp-token"];
-                  if (!token) {
-                    throw new Error("maozierp-token is missing in chrome.storage.local");
-                  }
-                  const response = await fetch(`https://api.maozierp.com/api.chrome/sku3?sku=${sku}`, {
-                    method: "POST",
-                    headers: {
-                      "Authorization": `Bearer ${token}`,
-                      "Client": "plugin",
-                      "Plugin-Version": pluginVersion,
-                      "Content-Type": "application/json",
-                      "User-Agent": "Mozilla/5.0"
-                    },
-                    body: JSON.stringify({ sku: String(sku) })
-                  });
-                  const text = await response.text();
-                  let data = null;
-                  try {
-                    data = JSON.parse(text);
-                  } catch (error) {
-                  }
-                  return {
-                    ok: response.ok,
-                    status: response.status,
-                    text,
-                    data
-                  };
-                }
-                """,
-                {"sku": str(sku), "pluginVersion": settings.maozi_plugin_version},
-            )
-            if result.get("ok"):
-                data = result.get("data")
-                if isinstance(data, dict):
-                    return data
-                errors.append("extension token returned non-JSON payload")
-            else:
-                response_text = str(result.get("text") or "")
-                lowered = response_text.lower()
-                if any(marker.lower() in lowered for marker in MAOZI_CHALLENGE_MARKERS):
-                    print(f"WARN: SKU3 single request returned Cloudflare page, skipping (sku={sku})")
-                else:
-                    errors.append(f"extension token request failed with HTTP {result.get('status')}: {response_text}")
-        except Exception as exc:
-            errors.append(f"extension token request error: {exc}")
-
-        try:
-            self._ensure_maozi_selection_ready(page)
-            result = page.evaluate(
-                """
-                async ({ sku }) => {
-                  const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
-                  const token = access.accessToken || '';
-                  if (!token) {
-                    throw new Error('maozierp-core-access.accessToken is missing');
-                  }
-                  const response = await fetch(`https://api.maozierp.com/api.chrome/sku3?sku=${sku}`, {
-                    method: 'POST',
-                    credentials: 'include',
-                    headers: {
-                      'Accept': 'application/json, text/plain, */*',
-                      'Authorization': `Bearer ${token}`,
-                      'Client': 'pc',
-                      'Content-Type': 'application/json',
-                      'DNT': '1'
-                    },
-                    body: JSON.stringify({ sku: String(sku) })
-                  });
-                  const text = await response.text();
-                  let data = null;
-                  try {
-                    data = JSON.parse(text);
-                  } catch (error) {
-                  }
-                  return {
-                    ok: response.ok,
-                    status: response.status,
-                    text,
-                    data
-                  };
-                }
-                """,
-                {"sku": str(sku)},
-            )
-            if result.get("ok"):
-                data = result.get("data")
-                if isinstance(data, dict):
-                    return data
-                errors.append("site token returned non-JSON payload")
-            else:
-                response_text = str(result.get("text") or "")
-                lowered = response_text.lower()
-                if any(marker.lower() in lowered for marker in MAOZI_CHALLENGE_MARKERS):
-                    print(f"WARN: SKU3 site-token path returned Cloudflare page, skipping (sku={sku})")
-                else:
-                    errors.append(f"site token request failed with HTTP {result.get('status')}: {response_text}")
-        except Exception as exc:
-            errors.append(f"site token request error: {exc}")
-
-        raise RuntimeError("; ".join(errors))
+        # 统一用 localStorage Token（Path B），跳过插件弹窗Path A
+        self._ensure_maozi_selection_ready(page)
+        result = page.evaluate(
+            """
+            async ({ sku }) => {
+              const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
+              const token = access.accessToken || '';
+              if (!token) {
+                return { ok: false, status: 0, text: 'Token missing', data: null };
+              }
+              const response = await fetch(`https://api.maozierp.com/api.chrome/sku3?sku=${sku}`, {
+                method: 'POST', credentials: 'include',
+                headers: {'Authorization': `Bearer ${token}`, 'Client': 'pc', 'Content-Type': 'application/json'},
+                body: JSON.stringify({ sku: String(sku) })
+              });
+              const text = await response.text();
+              let data = null;
+              try { data = JSON.parse(text); } catch(e) {}
+              return { ok: response.ok, status: response.status, text, data };
+            }
+            """,
+            {"sku": str(sku)},
+        )
+        if result.get("ok"):
+            data = result.get("data")
+            if isinstance(data, dict):
+                return data
+            raise RuntimeError("sku3 returned non-JSON payload")
+        raise RuntimeError(f"sku3 failed: HTTP {result.get('status')} {str(result.get('text',''))[:200]}")
     def _fetch_top_list_sku3_batch(
         self,
         page: Any,
