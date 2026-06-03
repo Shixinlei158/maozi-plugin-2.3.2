@@ -1271,7 +1271,7 @@ class BrowserOzonClient:
                 try {
                   const r = await fetch(`https://api.maozierp.com/api.chrome/sku3?sku=${encodeURIComponent(sku)}`, {
                     method:'POST', credentials:'include', signal:ctrl.signal,
-                    headers:{'Accept':'application/json','Authorization':`Bearer ${token}`,'Client':'plugin','Plugin-Version':pluginVersion,'Content-Type':'application/json','User-Agent':'Mozilla/5.0'},
+                    headers:{'Accept':'application/json','Authorization':`Bearer ${token}`,'Client':'pc','Content-Type':'application/json'},
                     body:JSON.stringify({sku:String(sku)})
                   });
                   const text = await r.text(); let data = null; try{data=JSON.parse(text);}catch(e){}
