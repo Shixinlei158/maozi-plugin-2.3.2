@@ -1787,13 +1787,6 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                                qualified_skus=total_qualified, rejected_skus=0,
                                seller_expansions=total_sellers)
 
-            # === 阶段2: 卖家后台循环消化 ===
-            if total_sellers > 0 or args.max_depth != 0:
-                print(f"phase: seller backlog | seeds_processed={total_seeds} qualified={total_qualified} running...")
-                cmd_expand_seller_backlog(args)
-            else:
-                print("no sellers expanded, skip seller backlog phase")
-
     except ManualInterventionRequired:
         finish_top_list_run(run_id, status="failed", pages_fetched=pages_fetched, items_fetched=items_fetched)
         raise
@@ -1802,6 +1795,13 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                            error_message=str(exc)[:512])
         notify_collection_failed("榜单采集", detail=f"run_id={run_id}", exc=exc)
         raise
+
+    # === 阶段2: 卖家后台循环消化（独立session，不嵌套） ===
+    if total_sellers > 0 or args.max_depth != 0:
+        print(f"phase: seller backlog | seeds_processed={total_seeds} qualified={total_qualified} running...")
+        cmd_expand_seller_backlog(args)
+    else:
+        print("no sellers expanded, skip seller backlog phase")
 
 def cmd_multi_category_network(args: argparse.Namespace) -> None:
     """多类目遍历采集模式：遍历ozon_categories指定层级的类目，每个类目独立拉取榜单并处理种子"""
