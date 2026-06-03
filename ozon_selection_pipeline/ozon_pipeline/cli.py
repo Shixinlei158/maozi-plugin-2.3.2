@@ -332,6 +332,9 @@ def _seller_looks_branded(items: list[dict[str, Any]], sample_size: int = 24) ->
     return True
 
 _BRANDED_SAMPLE_PAGES = 3  # 先取3页(24条)判断是否品牌卖家
+
+
+def run_seller_network(
     queue: deque[dict[str, Any]],
     *,
     browser: BrowserOzonClient,
