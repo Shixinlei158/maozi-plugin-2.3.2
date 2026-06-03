@@ -156,8 +156,8 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Ozon 采集控制台 (v2.3.2 专业版)")
-        self.root.geometry("1100x900")
-        self.root.minsize(960, 800)
+        self.root.geometry("1400x900")
+        self.root.minsize(1200, 750)
         self.root.configure(bg="#f5f6fa")
 
         self._stop_flag = threading.Event()
@@ -284,8 +284,11 @@ class App:
         self._current_seller_label.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(6, 0))
 
         # 核心控制区
-        control_panel = Frame(self.root, bg="#ffffff", padx=12, pady=8, relief="ridge", bd=1)
-        control_panel.pack(fill="x", padx=8, pady=4)
+        main_frame = Frame(self.root, bg="#f5f6fa")
+        main_frame.pack(fill="both", expand=True, padx=4, pady=2)
+
+        control_panel = Frame(main_frame, bg="#ffffff", padx=8, pady=8, relief="ridge", bd=1)
+        control_panel.pack(side="left", fill="both", expand=False, padx=(4, 2), pady=2)
 
         # 模式选择
         Label(control_panel, text="采集模式", bg="#ffffff", font=("Microsoft YaHei", 10, "bold")).grid(
@@ -499,8 +502,8 @@ class App:
         self._clear_btn.pack(side="left")
 
         # 日志区
-        log_frame = Frame(self.root, bg="#ffffff", padx=12, pady=8, relief="ridge", bd=1)
-        log_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+        log_frame = Frame(main_frame, bg="#ffffff", padx=12, pady=8, relief="ridge", bd=1)
+        log_frame.pack(side="right", fill="both", expand=True, padx=(2, 4), pady=2)
         Label(log_frame, text="运行日志", bg="#ffffff", font=("Microsoft YaHei", 10, "bold")).pack(anchor="w", pady=(0, 4))
 
         self._log_area = scrolledtext.ScrolledText(
