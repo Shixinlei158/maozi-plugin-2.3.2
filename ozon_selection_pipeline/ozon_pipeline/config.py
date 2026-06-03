@@ -183,6 +183,7 @@ class Settings:
         "yes",
     }
     seller_home_sku_batch_size: int = int(os.getenv("SELLER_HOME_SKU_BATCH_SIZE", "1000"))
+    seller_write_minimal: bool = os.getenv("SELLER_WRITE_MINIMAL", "true").lower() in {"1", "true", "yes"}
     feishu_webhook_url: str = os.getenv("FEISHU_WEBHOOK_URL", "")
 
 

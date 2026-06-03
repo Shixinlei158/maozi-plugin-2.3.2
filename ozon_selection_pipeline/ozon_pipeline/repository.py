@@ -692,7 +692,7 @@ def bulk_upsert_sku_results(
             })
 
     # 执行批量写入
-    if metric_rows:
+    if metric_rows and not (source.startswith("seller_home:") and settings.seller_write_minimal):
         columns = [c for c in metric_rows[0].keys()]
         updates = [f"{c}=VALUES({c})" for c in columns if c not in ("sku", "collected_at")]
         sql = f"""
@@ -730,7 +730,7 @@ def bulk_upsert_sku_results(
                 reason=row["reason"][:512] if row.get("reason") else None,
             )
     
-    if universe_entries:
+    if universe_entries and not (source.startswith("seller_home:") and settings.seller_write_minimal):
         bulk_upsert_sku_universe_full(universe_entries, source=source)
 
     return {
