@@ -424,33 +424,40 @@ def run_seller_network(
             continue
 
         # 阶段1：浅爬（3页），判断是否品牌卖家
+        # 多worker时做预检有意义，单worker直接全量爬（避免串行等）
+        do_shallow = seller_page_workers > 1 or browser.cdp_url is None
         crawl_start = time.perf_counter()
         shallow_map: dict[str, Any] = {}
-        for s in crawl_batch:
-            try:
-                shallow_map[s["url"]] = load_seller_home_products(s["url"], browser, max_scrolls=_BRANDED_SAMPLE_PAGES)
-            except Exception:
-                shallow_map[s["url"]] = None
+        if do_shallow:
+            for s in crawl_batch:
+                try:
+                    shallow_map[s["url"]] = load_seller_home_products(s["url"], browser, max_scrolls=_BRANDED_SAMPLE_PAGES)
+                except Exception:
+                    shallow_map[s["url"]] = None
 
         # 过滤品牌卖家
         full_crawl_batch = []
-        for s in crawl_batch:
-            url = s["url"]
-            result = shallow_map.get(url)
-            if result is None:
-                continue
-            items = result.get("items") or []
-            if items and _seller_looks_branded(items):
-                print(f"  skip branded seller (shallow): {url[:80]} | name={s.get('name','?')}")
-                from .repository import upsert_seller_shop as _upsert_shop
-                _upsert_shop(url, name=s.get("name"))
-                db.execute(
-                    "UPDATE seller_shops SET next_collect_after='2099-12-31 23:59:59' WHERE seller_key=%(key)s",
-                    {"key": seller_key(url)},
-                )
-                processed_sellers += 1
-                continue
-            full_crawl_batch.append(s)
+        if do_shallow:
+            for s in crawl_batch:
+                url = s["url"]
+                result = shallow_map.get(url)
+                if result is None:
+                    full_crawl_batch.append(s)  # 浅爬失败，继续全量
+                    continue
+                items = result.get("items") or []
+                if items and _seller_looks_branded(items):
+                    print(f"  skip branded seller (shallow): {url[:80]} | name={s.get('name','?')}")
+                    from .repository import upsert_seller_shop as _upsert_shop
+                    _upsert_shop(url, name=s.get("name"))
+                    db.execute(
+                        "UPDATE seller_shops SET next_collect_after='2099-12-31 23:59:59' WHERE seller_key=%(key)s",
+                        {"key": seller_key(url)},
+                    )
+                    processed_sellers += 1
+                    continue
+                full_crawl_batch.append(s)
+        else:
+            full_crawl_batch = list(crawl_batch)
 
         if not full_crawl_batch:
             continue
