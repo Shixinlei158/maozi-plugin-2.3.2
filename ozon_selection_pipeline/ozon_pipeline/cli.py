@@ -2822,6 +2822,7 @@ def build_parser() -> argparse.ArgumentParser:
     expand_seed_pool_network.add_argument("--process-limit", type=int, default=0)
     expand_seed_pool_network.add_argument("--retry-failed-now", action="store_true")
     expand_seed_pool_network.add_argument("--retry-deferred-now", action="store_true")
+    expand_seed_pool_network.add_argument("--retry-rejected-now", action="store_true")
     expand_seed_pool_network.add_argument("--max-depth", type=int, default=-1)
     expand_seed_pool_network.add_argument("--max-sellers", type=int, default=0)
     expand_seed_pool_network.add_argument("--sku-limit", type=int, default=0)

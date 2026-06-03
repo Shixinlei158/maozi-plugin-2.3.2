@@ -1572,9 +1572,17 @@ def bulk_mark_seed_pool_processed(items: list[dict[str, Any]]) -> int:
     """批量更新 seed_pool_skus 处理状态"""
     if not items:
         return 0
-    rows = []
-    for item in items:
-        rows.append({
+    return db.execute_many(
+        """
+        UPDATE seed_pool_skus
+        SET last_processed_at=CURRENT_TIMESTAMP,
+            last_processed_snapshot_hash=COALESCE(%(snapshot_hash)s, last_processed_snapshot_hash),
+            last_process_status=%(status)s,
+            last_process_reason=%(reason)s,
+            last_offer_count=COALESCE(%(seller_offer_count)s, last_offer_count)
+        WHERE source_type=%(source_type)s AND query_key=%(query_key)s AND sku=%(sku)s
+        """,
+        [{
             "source_type": item.get("source_type", "top_list"),
             "query_key": item.get("query_key", ""),
             "sku": str(item.get("sku", "")),
@@ -1582,20 +1590,7 @@ def bulk_mark_seed_pool_processed(items: list[dict[str, Any]]) -> int:
             "status": item.get("status", ""),
             "reason": (item.get("reason", "") or "")[:512] or None,
             "seller_offer_count": item.get("seller_offer_count"),
-        })
-    return db.execute_insert_many(
-        """
-        INSERT INTO seed_pool_skus (source_type, query_key, sku, last_processed_snapshot_hash, last_process_status, last_process_reason, last_offer_count, last_processed_at)
-        VALUES (%(source_type)s, %(query_key)s, %(sku)s, %(snapshot_hash)s, %(status)s, %(reason)s, %(seller_offer_count)s, CURRENT_TIMESTAMP)
-        ON DUPLICATE KEY UPDATE
-          last_processed_at=CURRENT_TIMESTAMP,
-          last_processed_snapshot_hash=COALESCE(VALUES(last_processed_snapshot_hash), last_processed_snapshot_hash),
-          last_process_status=VALUES(last_process_status),
-          last_process_reason=VALUES(last_process_reason),
-          last_offer_count=COALESCE(VALUES(last_offer_count), last_offer_count)
-        """,
-        rows,
-        batch_size=200,
+        } for item in items]
     )
 
 
