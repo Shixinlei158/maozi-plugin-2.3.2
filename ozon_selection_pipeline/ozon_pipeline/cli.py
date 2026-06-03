@@ -1417,7 +1417,7 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
         cached_items, due_items = due_seed_pool_items(
             query_key=args.query_key or None,
             source_type=args.source_type,
-            上限=args.process_limit,
+            process_limit=args.process_limit,
             retry_failed_now=retry_failed_now,
             retry_deferred_now=retry_deferred_now,
             retry_rejected_now=retry_rejected_now,
@@ -1546,7 +1546,7 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
         if stop_event is not None and stop_event.is_set():
             print("expand-network stop requested: exiting before next round")
             break
-        due_sellers = list_due_seller_shops(上限=args.process_limit)
+        due_sellers = list_due_seller_shops(process_limit=args.process_limit)
         vlog(
             "seller backlog preview:",
             [f"{item.get('seller_key')}:{item.get('home_url')}" for item in due_sellers[:10]],
@@ -1901,7 +1901,7 @@ def cmd_multi_category_network(args: argparse.Namespace) -> None:
                 # 种子处理
                 cached_items, due_items = due_seed_pool_items(
                     query_key=query_key, source_type="top_list",
-                    上限=args.process_limit,
+                    process_limit=args.process_limit,
                     retry_failed_now=args.retry_failed_now,
                     retry_deferred_now=args.retry_deferred_now,
                     retry_rejected_now=args.retry_rejected_now,
