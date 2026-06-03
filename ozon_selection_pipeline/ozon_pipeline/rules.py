@@ -69,7 +69,7 @@ DEFAULT_SELECTION_RULE = ProductSelectionRule(
     name="0325 优质品",
     require_unbranded=True,
     sold_count=RangeRule(minimum=Decimal("1"), maximum=Decimal("65")),
-    price=RangeRule(minimum=Decimal("50"), maximum=Decimal("1000")),
+    price=RangeRule(minimum=Decimal("20"), maximum=Decimal("1000")),
     weight_g=RangeRule(maximum=Decimal("5000")),
     create_days=RangeRule(maximum=Decimal("180")),
     redemption_rate=RangeRule(maximum=Decimal("5")),

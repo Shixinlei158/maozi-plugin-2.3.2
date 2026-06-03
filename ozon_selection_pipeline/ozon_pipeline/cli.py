@@ -292,7 +292,7 @@ def cmd_fetch_seller_home(args: argparse.Namespace) -> None:
         print(item.get("href"), "|", item.get("title") or "<no-title>")
 
 
-_PRICE_MIN_CNY = Decimal("50")
+_PRICE_MIN_CNY = Decimal("20")
 _PRICE_MAX_CNY = Decimal("1000")
 _RUB_RATE = Decimal(str(settings.rub_to_cny_rate))
 
