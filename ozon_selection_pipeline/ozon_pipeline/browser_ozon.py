@@ -1297,36 +1297,22 @@ class BrowserOzonClient:
         concurrency: int,
     ) -> dict[str, dict[str, Any]]:
         # ============================================================
-        # Token 获取：两路径互为备份，实际为同一个 JWT
+        # Token 获取：双路径互为备份
         #   Path A (优先): chrome.storage.local['maozierp-token'] ← 插件写入
         #   Path B (降级): localStorage['maozierp-core-access'].accessToken ← 网页写入
-        # 榜单API仅用 Path B，SKU3 二者皆可。保留双路径确保任一端登录即可工作。
+        # 先试 Path A（超时缩短到3秒），不可达则立刻降级 Path B
         # ============================================================
         if self._cached_maozi_token is None:
             token = None
 
-            # Path A: Chrome 插件存储（需打开扩展弹窗页面）
+            # Path A: 快速尝试插件存储（带短超时）
             try:
-                target_url = self._extension_popup_url()
-                try:
-                    current = page.url or ""
-                except Exception:
-                    current = ""
-                if current != target_url:
-                    page.goto(target_url, wait_until="load", timeout=15000)
-                    page.wait_for_timeout(800)
-
                 token_result = page.evaluate("""
                     async () => {
-                        let token = null;
-                        for (let i = 0; i < 8 && !token; i++) {
-                            if (i > 0) await new Promise(r => setTimeout(r, 500));
-                            try {
-                                const s = await chrome.storage.local.get(["maozierp-token"]);
-                                token = s["maozierp-token"];
-                            } catch(e) {}
-                        }
-                        return token || null;
+                        try {
+                            const s = await chrome.storage.local.get(["maozierp-token"]);
+                            return s["maozierp-token"] || null;
+                        } catch(e) { return null; }
                     }
                 """)
                 if token_result:
