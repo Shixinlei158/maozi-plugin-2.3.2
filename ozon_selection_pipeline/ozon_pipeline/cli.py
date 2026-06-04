@@ -526,6 +526,9 @@ def run_seller_network(
 
             crawl_elapsed = time.perf_counter() - crawl_start
             items = result.get("items") or []
+            if not items:
+                processed_sellers += 1
+                continue
             # 廉价预筛：在进入昂贵的SKU3获取之前过滤明显不合格的商品
             raw_count = len(items)
             items = [it for it in items if _seller_item_passes_prefilter(it)]
@@ -966,7 +969,8 @@ def preflight_seed_pool_maozi_access(
     probe_sku = str(due_items[0]["sku"])
     vlog("preflight start:", f"probe_sku={probe_sku}", f"due_items={len(due_items)}", prefix="preflight")
     if browser.cdp_url:
-        while True:
+        last_error: Exception | None = None
+        for attempt in range(3):
             try:
                 browser.ping_cdp()
                 response, source = load_top_list_maozi_sku3(probe_sku, maozi, browser)
@@ -986,12 +990,17 @@ def preflight_seed_pool_maozi_access(
                     )
                 return {probe_sku: (response, source)}
             except Exception as exc:
-                print("browser preflight failed:", exc)
+                last_error = exc
                 print(
-                    "manual action required: keep the current browser window open, confirm Ozon and Maozi are logged in, "
-                    "then press Enter to retry. Press Ctrl+C to stop this run."
+                    "browser preflight failed:",
+                    f"attempt={attempt + 1}/3",
+                    summarize_exception(exc),
                 )
-                input()
+                time.sleep(5 * (attempt + 1))
+        raise ManualInterventionRequired(
+            "seed-pool preflight failed after automatic retries; "
+            f"probe_sku={probe_sku}; error={summarize_exception(last_error)}"
+        )
 
     try:
         response, source = load_top_list_maozi_sku3(probe_sku, maozi, browser)
@@ -1413,6 +1422,28 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
     retry_deferred_now = args.retry_deferred_now
     retry_rejected_now = args.retry_rejected_now
     consecutive_auth_failures = 0
+    stats = {
+        "due_rows": 0,
+        "unique_due_skus": 0,
+        "prefiltered_skus": 0,
+        "processed_skus": 0,
+        "qualified_skus": 0,
+        "rejected_skus": 0,
+        "failed_skus": 0,
+        "deferred_seed_skus": 0,
+        "strict_seed_inserts": 0,
+        "seller_offer_rows": 0,
+        "reused_duplicate_rows": 0,
+        "seller_stats": {
+            "processed_sellers": 0,
+            "skipped_recent": 0,
+            "queued_sellers": 0,
+            "total_skus": 0,
+            "qualified_skus": 0,
+            "rejected_skus": 0,
+            "seller_offers": 0,
+        },
+    }
     while True:
         cached_items, due_items = due_seed_pool_items(
             query_key=args.query_key or None,
@@ -1541,12 +1572,29 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
     MAX_EMPTY_ROUNDS = 3
     MAX_AUTH_FAILURES = 5
     stop_event = getattr(args, "stop_event", None)
+    total_seller_limit = max(0, int(args.max_sellers or 0))
 
     while True:
         if stop_event is not None and stop_event.is_set():
             print("expand-network stop requested: exiting before next round")
             break
-        due_sellers = list_due_seller_shops(process_limit=args.process_limit)
+        if total_seller_limit and total_processed >= total_seller_limit:
+            print(
+                "expand-network complete:",
+                f"total_seller_limit={total_seller_limit}",
+                f"total_sellers_processed={total_processed}",
+            )
+            break
+        round_process_limit = int(args.process_limit or 0)
+        round_seller_limit = int(args.max_sellers or 0)
+        if total_seller_limit:
+            remaining_total = max(0, total_seller_limit - total_processed)
+            round_seller_limit = remaining_total
+            if round_process_limit > 0:
+                round_process_limit = min(round_process_limit, remaining_total)
+            else:
+                round_process_limit = remaining_total
+        due_sellers = list_due_seller_shops(process_limit=round_process_limit)
         vlog(
             "seller backlog preview:",
             [f"{item.get('seller_key')}:{item.get('home_url')}" for item in due_sellers[:10]],
@@ -1555,7 +1603,8 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
         print(
             f"expand-network round {round_no + 1} due:",
             f"fetched={len(due_sellers)}",
-            f"process_limit={args.process_limit}",
+            f"process_limit={round_process_limit}",
+            f"seller_limit={round_seller_limit or '<unlimited>'}",
         )
         if not due_sellers:
             print("expand-network complete: no more due seller pages to process")
@@ -1583,7 +1632,7 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
                     browser=browser,
                     maozi=maozi,
                     max_depth=args.max_depth,
-                    max_sellers=args.max_sellers,
+                    max_sellers=round_seller_limit,
                     sku_limit=args.sku_limit,
                     max_scrolls=args.max_scrolls,
                     seller_sku_workers=args.seller_sku_workers,
@@ -1746,6 +1795,13 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                     pages_fetched += 1
                     items_fetched += len(items)
                     print(f"top-list page: {page_no}/{payload.get('last_page','?')} | items={len(items)} | api={t_api-t_page:.1f}s | db={t_db-t_api:.1f}s")
+                    if args.skip_process:
+                        total_seeds += len(items)
+                        print(f"  page seeds: {len(items)} stored, processing skipped")
+                        last_page = int(payload.get("last_page") or page_no)
+                        if page_no >= last_page:
+                            break
+                        continue
                     # 逐页即时处理：预筛+SKU3+种子判定+卖家扩展
                     from .repository import top_list_snapshot_hash
                     page_items = []
