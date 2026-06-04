@@ -334,6 +334,12 @@ class App:
                        tooltip="从每个卖家主页提取的SKU最大数量。0表示全部提取。示例：200")
         self._add_param(tab_core, 2, 0, "卖家页最大滚动 (max_scrolls)", "max_scrolls", "8", "int", min_val=0, max_val=50,
                        tooltip="若API失效回退到DOM模式时，页面的滚动次数。示例：8")
+        self._add_param(tab_core, 2, 1, "无人值守循环", "forever", True, "bool",
+                       tooltip="勾选后当前采集路径完成或暂无任务时不会退出，会休眠后继续下一轮")
+        self._add_param(tab_core, 3, 0, "空闲等待秒数", "idle_sleep_seconds", str(settings.collection_idle_sleep_seconds), "int", min_val=1, max_val=86400,
+                       tooltip="无人值守循环在无任务、完成一轮或认证恢复失败后的等待时间。建议：300")
+        self._add_param(tab_core, 3, 1, "轮次间隔秒数", "cycle_sleep_seconds", str(settings.collection_cycle_sleep_seconds), "int", min_val=1, max_val=86400,
+                       tooltip="正常完成一轮采集后的等待时间。建议：60")
 
         # Tab 2: 并发控制
         self._add_param(tab_conc, 0, 0, "SKU3 批量大小 (batch_size)", "batch_size", str(settings.top_list_sku3_batch_size), "int", min_val=1, max_val=100,
@@ -667,6 +673,9 @@ class App:
             "max_sellers": "0",
             "sku_limit": "0",
             "max_scrolls": "8",
+            "forever": True,
+            "idle_sleep_seconds": str(settings.collection_idle_sleep_seconds),
+            "cycle_sleep_seconds": str(settings.collection_cycle_sleep_seconds),
             "batch_size": str(settings.top_list_sku3_batch_size),
             "concurrency": str(settings.top_list_sku3_batch_concurrency),
             "chunk_delay_ms": str(settings.top_list_sku3_batch_chunk_delay_ms),
@@ -1122,6 +1131,9 @@ class App:
                 "remote_debugging_port": settings.chrome_remote_debugging_port,
                 "headless": settings.chrome_headless,
                 "stop_event": self._stop_flag,
+                "forever": True,
+                "idle_sleep_seconds": settings.collection_idle_sleep_seconds,
+                "cycle_sleep_seconds": settings.collection_cycle_sleep_seconds,
             }
             full_params.update(user_params)
             

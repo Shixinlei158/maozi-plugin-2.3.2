@@ -29,6 +29,9 @@ python -m ozon_pipeline.cli gui
 
 # 4. 命令行模式
 python -m ozon_pipeline.cli crawl-top-list-network --cdp-url http://127.0.0.1:9222 --main-type hot --page-from 1 --page-to 20
+
+# 5. 无人值守长跑（选中的采集路径完成/空闲后继续下一轮）
+python -m ozon_pipeline.cli expand-seller-backlog --cdp-url http://127.0.0.1:9222 --forever --idle-sleep-seconds 300
 ```
 
 **前置条件**：Chrome 浏览器已打开并登录毛子 ERP（`https://ozon.maozierp.com`），远程调试端口 9222 已启用。
@@ -53,6 +56,18 @@ seller_shops 表中取到期卖家（29211 个待处理队列）
 
 **适用**：日常持续消化卖家池，自动发现新卖家。
 
+命令行一次性验收示例：
+
+```bash
+python -m ozon_pipeline.cli expand-seller-backlog --cdp-url http://127.0.0.1:9222 --process-limit 200 --max-sellers 200
+```
+
+命令行无人值守示例：
+
+```bash
+python -m ozon_pipeline.cli expand-seller-backlog --cdp-url http://127.0.0.1:9222 --process-limit 0 --max-sellers 0 --forever --idle-sleep-seconds 300
+```
+
 ### 2. 榜单采集网络
 
 ```
@@ -63,6 +78,12 @@ seller_shops 表中取到期卖家（29211 个待处理队列）
 ```
 
 **适用**：周期性拉新榜单获取新鲜种子，然后自动进入卖家扩展。
+
+命令行拉取 5000 条榜单种子示例：
+
+```bash
+python -m ozon_pipeline.cli crawl-top-list-network --cdp-url http://127.0.0.1:9222 --main-type hot --page-from 1 --page-to 100 --page-size 50 --skip-process
+```
 
 ### 3. 种子池处理
 
@@ -76,6 +97,12 @@ seller_shops 表中取到期卖家（29211 个待处理队列）
 
 **适用**：对已拉取的榜单种子重新判定（规则变更后），或处理之前失败的种子。
 
+命令行处理历史种子示例：
+
+```bash
+python -m ozon_pipeline.cli expand-seed-pool-network --cdp-url http://127.0.0.1:9222 --source-type top_list --process-limit 0 --forever --idle-sleep-seconds 300
+```
+
 ### 4. 多类目采集网络
 
 ```
@@ -86,6 +113,12 @@ seller_shops 表中取到期卖家（29211 个待处理队列）
 ```
 
 **适用**：按类目维度精细化拉取，覆盖更多细分市场。
+
+命令行示例：
+
+```bash
+python -m ozon_pipeline.cli multi-category-network --cdp-url http://127.0.0.1:9222 --category-level 2 --pages-per-category 5 --forever
+```
 
 ---
 
@@ -236,6 +269,10 @@ SELLER_WRITE_MINIMAL=true          # 极简写入（只写合格品）
 # 写入超时
 DB_READ_TIMEOUT=600
 DB_WRITE_TIMEOUT=600
+
+# 无人值守循环
+COLLECTION_IDLE_SLEEP_SECONDS=300
+COLLECTION_CYCLE_SLEEP_SECONDS=60
 
 # 汇率
 RUB_TO_CNY_RATE=0.0912

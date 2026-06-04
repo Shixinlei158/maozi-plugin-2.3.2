@@ -97,6 +97,37 @@ def build_retry_reason(stage: str, exc: Exception | None = None) -> str:
     return f"待重试: {stage}获取失败，未完成最终判定"
 
 
+def collection_forever_enabled(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "forever", False))
+
+
+def collection_stop_requested(args: argparse.Namespace) -> bool:
+    stop_event = getattr(args, "stop_event", None)
+    return bool(stop_event is not None and stop_event.is_set())
+
+
+def wait_for_collection_retry(
+    args: argparse.Namespace,
+    reason: str,
+    *,
+    default_seconds: int | None = None,
+    seconds_attr: str = "idle_sleep_seconds",
+) -> bool:
+    raw_seconds = getattr(args, seconds_attr, None)
+    if raw_seconds is None:
+        raw_seconds = default_seconds or settings.collection_idle_sleep_seconds
+    seconds = int(raw_seconds or 0)
+    seconds = max(1, seconds)
+    print(f"collection idle: {reason}; sleep={seconds}s")
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if collection_stop_requested(args):
+            print("collection idle interrupted by stop request")
+            return False
+        time.sleep(min(1.0, max(0.0, deadline - time.time())))
+    return not collection_stop_requested(args)
+
+
 def should_defer_for_pending_refresh(metric: dict[str, Any], reasons: list[str]) -> bool:
     if not (metric.get("status_update_sales") or metric.get("status_update_variant")):
         return False
@@ -1421,6 +1452,7 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
     retry_failed_now = args.retry_failed_now
     retry_deferred_now = args.retry_deferred_now
     retry_rejected_now = args.retry_rejected_now
+    forever = collection_forever_enabled(args)
     consecutive_auth_failures = 0
     stats = {
         "due_rows": 0,
@@ -1445,6 +1477,9 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
         },
     }
     while True:
+        if collection_stop_requested(args):
+            print("seed-pool stop requested: exiting before next round")
+            break
         cached_items, due_items = due_seed_pool_items(
             query_key=args.query_key or None,
             source_type=args.source_type,
@@ -1465,6 +1500,12 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
             f"cached_rows={len(cached_items)}",
             f"due_rows={len(due_items)}",
         )
+        if not due_items:
+            if forever:
+                if not wait_for_collection_retry(args, "no due seed-pool items"):
+                    break
+                continue
+            break
         try:
             with browser.session():
                 prefetched_maozi = preflight_seed_pool_maozi_access(due_items, browser=browser, maozi=maozi)
@@ -1481,6 +1522,15 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
                     seller_sku_workers=args.seller_sku_workers,
                     prefetched_maozi=prefetched_maozi,
                 )
+            if forever:
+                if not wait_for_collection_retry(
+                    args,
+                    "seed-pool cycle complete",
+                    default_seconds=settings.collection_cycle_sleep_seconds,
+                    seconds_attr="cycle_sleep_seconds",
+                ):
+                    break
+                continue
             break
         except ManualInterventionRequired as exc:
             log_line("采集需要认证恢复:", exc, prefix="auth")
@@ -1508,15 +1558,28 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
             log_line(f"自动恢复失败 (连续失败={consecutive_auth_failures})", prefix="manual")
             
             if consecutive_auth_failures >= 5:
+                extra_fields = [
+                    {"label": "累计处理种子SKU", "value": str(stats.get("processed_skus", "N/A"))},
+                    {"label": "累计达标SKU", "value": str(stats.get("qualified_skus", "N/A"))},
+                ]
+                if forever:
+                    log_line("连续认证失败超过5次，无人值守模式将休眠后继续恢复", prefix="manual")
+                    notify_collection_warning(
+                        "seed-pool网络",
+                        "连续认证失败，休眠后继续自动恢复",
+                        detail=f"认证自动恢复连续失败 {consecutive_auth_failures} 次，采集未退出",
+                        extra_fields=extra_fields,
+                    )
+                    consecutive_auth_failures = 0
+                    if not wait_for_collection_retry(args, "seed-pool auth recovery failed"):
+                        break
+                    continue
                 log_line("连续认证失败超过5次，停止采集", prefix="manual")
                 notify_collection_stopped(
                     "seed-pool网络",
                     "连续认证失败超过5次",
                     detail=f"认证自动恢复连续失败 {consecutive_auth_failures} 次，采集已停止",
-                    extra_fields=[
-                        {"label": "累计处理种子SKU", "value": str(stats.get("processed_skus", "N/A"))},
-                        {"label": "累计达标SKU", "value": str(stats.get("qualified_skus", "N/A"))},
-                    ],
+                    extra_fields=extra_fields,
                 )
                 break
             import sys
@@ -1572,10 +1635,11 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
     MAX_EMPTY_ROUNDS = 3
     MAX_AUTH_FAILURES = 5
     stop_event = getattr(args, "stop_event", None)
+    forever = collection_forever_enabled(args)
     total_seller_limit = max(0, int(args.max_sellers or 0))
 
     while True:
-        if stop_event is not None and stop_event.is_set():
+        if collection_stop_requested(args):
             print("expand-network stop requested: exiting before next round")
             break
         if total_seller_limit and total_processed >= total_seller_limit:
@@ -1607,6 +1671,10 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
             f"seller_limit={round_seller_limit or '<unlimited>'}",
         )
         if not due_sellers:
+            if forever:
+                if not wait_for_collection_retry(args, "no due seller pages"):
+                    break
+                continue
             print("expand-network complete: no more due seller pages to process")
             break
 
@@ -1620,6 +1688,10 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
             if str(item.get("home_url") or "").strip()
         )
         if not queue:
+            if forever:
+                if not wait_for_collection_retry(args, "all due seller rows have invalid home_url"):
+                    break
+                continue
             print("expand-network empty after filtering invalid home_url rows")
             break
         try:
@@ -1664,18 +1736,32 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
                 log_line(f"自动恢复失败 (连续失败={consecutive_auth_failures}/{MAX_AUTH_FAILURES})", prefix="manual")
                 
                 if consecutive_auth_failures >= MAX_AUTH_FAILURES:
+                    extra_fields = [
+                        {"label": "累计处理卖家", "value": str(total_processed)},
+                        {"label": "累计SKU", "value": str(total_skus)},
+                        {"label": "累计达标", "value": str(total_qualified)},
+                        {"label": "累计拒绝", "value": str(total_rejected)},
+                    ]
+                    if forever:
+                        log_line("连续认证失败超过上限，无人值守模式将休眠后继续恢复", prefix="manual")
+                        notify_collection_warning(
+                            "卖家列表循环",
+                            "连续认证失败，休眠后继续自动恢复",
+                            round_no=round_no,
+                            detail=f"认证自动恢复连续失败 {consecutive_auth_failures} 次，采集未退出",
+                            extra_fields=extra_fields,
+                        )
+                        consecutive_auth_failures = 0
+                        if not wait_for_collection_retry(args, "auth recovery failed"):
+                            break
+                        continue
                     log_line("连续认证失败超过上限，停止采集", prefix="manual")
                     notify_collection_stopped(
                         "卖家列表循环",
                         "连续认证失败超过上限",
                         round_no=round_no,
                         detail=f"认证自动恢复连续失败 {consecutive_auth_failures} 次，采集已停止",
-                        extra_fields=[
-                            {"label": "累计处理卖家", "value": str(total_processed)},
-                            {"label": "累计SKU", "value": str(total_skus)},
-                            {"label": "累计达标", "value": str(total_qualified)},
-                            {"label": "累计拒绝", "value": str(total_rejected)},
-                        ],
+                        extra_fields=extra_fields,
                     )
                     break
                 
@@ -1718,19 +1804,33 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
                 f"expand-network: no progress in this round, consecutive empty rounds={consecutive_empty_rounds}/{MAX_EMPTY_ROUNDS}"
             )
             if consecutive_empty_rounds >= MAX_EMPTY_ROUNDS:
+                extra_fields = [
+                    {"label": "累计处理卖家", "value": str(total_processed)},
+                    {"label": "累计SKU", "value": str(total_skus)},
+                    {"label": "累计达标", "value": str(total_qualified)},
+                    {"label": "累计拒绝", "value": str(total_rejected)},
+                    {"label": "累计跟卖记录", "value": str(total_offers)},
+                ]
+                if forever:
+                    print("expand-network: too many empty rounds, sleeping before next unattended cycle")
+                    notify_collection_warning(
+                        "卖家列表循环",
+                        f"连续 {MAX_EMPTY_ROUNDS} 轮无进展，休眠后继续",
+                        round_no=round_no,
+                        detail="当前轮无新增处理或入队，等待下一批到期卖家或新入队卖家",
+                        extra_fields=extra_fields,
+                    )
+                    consecutive_empty_rounds = 0
+                    if not wait_for_collection_retry(args, "seller backlog made no progress"):
+                        break
+                    continue
                 print("expand-network: too many consecutive empty rounds, stopping")
                 notify_collection_stopped(
                     "卖家列表循环",
                     f"连续 {MAX_EMPTY_ROUNDS} 轮无进展",
                     round_no=round_no,
                     detail="所有待处理卖家均已被处理或跳过，无新卖家入队",
-                    extra_fields=[
-                        {"label": "累计处理卖家", "value": str(total_processed)},
-                        {"label": "累计SKU", "value": str(total_skus)},
-                        {"label": "累计达标", "value": str(total_qualified)},
-                        {"label": "累计拒绝", "value": str(total_rejected)},
-                        {"label": "累计跟卖记录", "value": str(total_offers)},
-                    ],
+                    extra_fields=extra_fields,
                     severity="info",
                 )
                 break
@@ -1750,7 +1850,7 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
     )
 
 
-def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
+def _crawl_top_list_network_once(args: argparse.Namespace) -> None:
     browser = build_browser_client(args)
     maozi = MaoziClient()
     print_browser_runtime_notice(browser)
@@ -1844,18 +1944,39 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
         raise
 
     # === 阶段2: 卖家后台循环消化（独立session，不嵌套） ===
-    if total_sellers > 0 or args.max_depth != 0:
+    if args.skip_process:
+        print("processing skipped, skip seller backlog phase")
+    elif total_sellers > 0 or args.max_depth != 0:
         print(f"phase: seller backlog | seeds_processed={total_seeds} qualified={total_qualified} running...")
         cmd_expand_seller_backlog(args)
     else:
         print("no sellers expanded, skip seller backlog phase")
 
-def cmd_multi_category_network(args: argparse.Namespace) -> None:
+
+def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
+    while True:
+        if collection_stop_requested(args):
+            print("top-list stop requested: exiting before next round")
+            break
+        _crawl_top_list_network_once(args)
+        if not collection_forever_enabled(args):
+            break
+        if not wait_for_collection_retry(
+            args,
+            "top-list cycle complete",
+            default_seconds=settings.collection_cycle_sleep_seconds,
+            seconds_attr="cycle_sleep_seconds",
+        ):
+            break
+
+
+def _multi_category_network_once(args: argparse.Namespace) -> None:
     """多类目遍历采集模式：遍历ozon_categories指定层级的类目，每个类目独立拉取榜单并处理种子"""
     browser = build_browser_client(args)
     maozi = MaoziClient()
     print_browser_runtime_notice(browser)
-    category_level = args.category_level  # 1, 2, 3, or "all"
+    category_level_arg = str(args.category_level).strip().lower()
+    category_level = "all" if category_level_arg == "all" else int(category_level_arg)  # 1, 2, 3, or "all"
     pages_per_category = max(1, int(args.pages_per_category))
     page_size = max(1, min(int(args.page_size), 50))
 
@@ -1996,6 +2117,23 @@ def cmd_multi_category_network(args: argparse.Namespace) -> None:
     print(f"multi-category summary: categories={len(categories)} pages={total_pages} items={total_items} seeds_processed={total_seeds} qualified={total_qualified} sellers={total_sellers} elapsed={t_total:.1f}s")
 
 
+def cmd_multi_category_network(args: argparse.Namespace) -> None:
+    while True:
+        if collection_stop_requested(args):
+            print("multi-category stop requested: exiting before next round")
+            break
+        _multi_category_network_once(args)
+        if not collection_forever_enabled(args):
+            break
+        if not wait_for_collection_retry(
+            args,
+            "multi-category cycle complete",
+            default_seconds=settings.collection_cycle_sleep_seconds,
+            seconds_attr="cycle_sleep_seconds",
+        ):
+            break
+
+
 
 
 def cmd_show_browser_config(args: argparse.Namespace) -> None:
@@ -2027,6 +2165,12 @@ def add_browser_options(parser: argparse.ArgumentParser, include_headless: bool 
     parser.add_argument("--remote-debugging-port", type=int, default=None)
     if include_headless:
         parser.add_argument("--headless", action="store_true")
+
+
+def add_unattended_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--forever", action="store_true", help="keep the selected collection path running after idle/completed rounds")
+    parser.add_argument("--idle-sleep-seconds", type=int, default=settings.collection_idle_sleep_seconds)
+    parser.add_argument("--cycle-sleep-seconds", type=int, default=settings.collection_cycle_sleep_seconds)
 
 
 def add_top_list_options(parser: argparse.ArgumentParser) -> None:
@@ -2892,6 +3036,7 @@ def build_parser() -> argparse.ArgumentParser:
     expand_seller_backlog.add_argument("--max-scrolls", type=int, default=8)
     expand_seller_backlog.add_argument("--seller-sku-workers", type=int, default=settings.seller_sku_workers)
     expand_seller_backlog.add_argument("--seller-page-workers", type=int, default=settings.seller_page_workers)
+    add_unattended_options(expand_seller_backlog)
     add_browser_options(expand_seller_backlog, include_headless=True)
     expand_seller_backlog.set_defaults(func=cmd_expand_seller_backlog)
 
@@ -2904,6 +3049,7 @@ def build_parser() -> argparse.ArgumentParser:
     crawl_top_list_network.add_argument("--seed-sku-workers", type=int, default=settings.seed_sku_workers)
     crawl_top_list_network.add_argument("--seller-sku-workers", type=int, default=settings.seller_sku_workers)
     crawl_top_list_network.add_argument("--seller-page-workers", type=int, default=settings.seller_page_workers)
+    add_unattended_options(crawl_top_list_network)
     add_browser_options(crawl_top_list_network, include_headless=True)
     crawl_top_list_network.set_defaults(func=cmd_crawl_top_list_network)
 
@@ -2920,8 +3066,23 @@ def build_parser() -> argparse.ArgumentParser:
     expand_seed_pool_network.add_argument("--max-scrolls", type=int, default=8)
     expand_seed_pool_network.add_argument("--seed-sku-workers", type=int, default=settings.seed_sku_workers)
     expand_seed_pool_network.add_argument("--seller-sku-workers", type=int, default=settings.seller_sku_workers)
+    add_unattended_options(expand_seed_pool_network)
     add_browser_options(expand_seed_pool_network, include_headless=True)
     expand_seed_pool_network.set_defaults(func=cmd_expand_seed_pool_network)
+
+    multi_category_network = sub.add_parser("multi-category-network")
+    add_top_list_options(multi_category_network)
+    multi_category_network.add_argument("--category-level", default="1", choices=["1", "2", "3", "all"])
+    multi_category_network.add_argument("--pages-per-category", type=int, default=5)
+    multi_category_network.add_argument("--max-depth", type=int, default=1)
+    multi_category_network.add_argument("--max-sellers", type=int, default=20)
+    multi_category_network.add_argument("--sku-limit", type=int, default=0)
+    multi_category_network.add_argument("--max-scrolls", type=int, default=8)
+    multi_category_network.add_argument("--seed-sku-workers", type=int, default=settings.seed_sku_workers)
+    multi_category_network.add_argument("--seller-sku-workers", type=int, default=settings.seller_sku_workers)
+    add_unattended_options(multi_category_network)
+    add_browser_options(multi_category_network, include_headless=True)
+    multi_category_network.set_defaults(func=cmd_multi_category_network)
 
     show_browser_config = sub.add_parser("show-browser-config")
     add_browser_options(show_browser_config, include_headless=True)
