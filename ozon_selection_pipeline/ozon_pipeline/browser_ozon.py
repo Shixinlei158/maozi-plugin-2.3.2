@@ -74,6 +74,7 @@ class BrowserOzonClient:
         self._context: Any | None = None
         self._session_owns_context = False
         self._sticky_pages: dict[str, Any] = {}
+        self._owned_sticky_page_ids: set[int] = set()
         self._task_lock = RLock()
         self._prepared_context_ids: set[int] = set()
         self._prepared_page_ids: set[int] = set()
@@ -408,12 +409,15 @@ class BrowserOzonClient:
             for page in list(self._sticky_pages.values()):
                 try:
                     if page is not None and not page.is_closed():
-                        page.close()
+                        marker = self._page_marker(page)
+                        if id(page) in self._owned_sticky_page_ids or marker.startswith(AUTOMATION_PAGE_NAME_PREFIX):
+                            page.close()
                 except _CLEANUP_EXCEPTIONS:
                     pass
                 except Exception:
                     pass
             self._sticky_pages.clear()
+            self._owned_sticky_page_ids.clear()
             if self._context is not None and self._session_owns_context:
                 try:
                     self._context.close()
@@ -428,6 +432,7 @@ class BrowserOzonClient:
             self._browser = None
             self._prepared_context_ids.clear()
             self._prepared_page_ids.clear()
+            self._owned_sticky_page_ids.clear()
             if self._playwright_cm is not None:
                 try:
                     self._playwright_cm.__exit__(None, None, None)
@@ -939,6 +944,7 @@ class BrowserOzonClient:
                 # 最后才尝试新建
                 page = context.new_page()
                 self._mark_managed_page(page, handler_name)
+                self._owned_sticky_page_ids.add(id(page))
                 self._sticky_pages[handler_name] = page
                 return page, False
 
@@ -954,6 +960,7 @@ class BrowserOzonClient:
 
             page = context.new_page()
             self._mark_managed_page(page, handler_name)
+            self._owned_sticky_page_ids.add(id(page))
             self._sticky_pages[handler_name] = page
             return page, False
 
