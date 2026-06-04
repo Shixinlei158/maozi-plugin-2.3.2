@@ -313,6 +313,42 @@ class BrowserOzonClient:
         except Exception:
             return {"logged_in": False, "reason": "check_failed"}
 
+    def maozi_auth_state(self) -> dict[str, Any]:
+        """Return Maozi web auth state from the current CDP context."""
+        if not self._context:
+            return {"has_access_token": False, "reason": "no_context"}
+        try:
+            for page in list(self._context.pages):
+                try:
+                    if page.is_closed():
+                        continue
+                    if not str(page.url or "").startswith(MAOZI_SELECTION_ORIGIN):
+                        continue
+                    result = page.evaluate(
+                        """
+                        () => {
+                          let access = null;
+                          try { access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}'); } catch(e) {}
+                          const token = access && access.accessToken;
+                          return {
+                            has_access_token: Boolean(token),
+                            token_length: token ? String(token).length : 0,
+                            title: document.title || '',
+                            url: location.href,
+                            body_sample: (document.body?.innerText || '').slice(0, 160)
+                          };
+                        }
+                        """
+                    )
+                    if isinstance(result, dict):
+                        result.setdefault("reason", "ok" if result.get("has_access_token") else "missing_access_token")
+                        return result
+                except Exception:
+                    continue
+            return {"has_access_token": False, "reason": "no_maozi_page"}
+        except Exception as exc:
+            return {"has_access_token": False, "reason": "check_failed", "error": str(exc)[:160]}
+
     def auto_login(self, username: str | None = None, password: str | None = None) -> bool:
         """自动登录毛子ERP
         

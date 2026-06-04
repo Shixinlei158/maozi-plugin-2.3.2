@@ -2145,6 +2145,100 @@ def cmd_show_browser_config(args: argparse.Namespace) -> None:
     print("tip: one browser profile directory should serve exactly one target Google/Ozon/plugin account set.")
 
 
+def cmd_doctor(args: argparse.Namespace) -> None:
+    browser = build_browser_client(args)
+    checks: list[tuple[str, str, str]] = []
+
+    def add(status: str, name: str, detail: str = "") -> None:
+        checks.append((status, name, detail))
+
+    info = browser.describe()
+    add("OK" if Path(str(info["profile_dir"])).exists() else "FAIL", "chrome profile", str(info["profile_dir"]))
+    add("OK" if info.get("extension_exists") else "FAIL", "maozi extension", str(info.get("extension_dir")))
+    add("OK" if info.get("executable_exists") else "WARN", "chrome executable", str(info.get("executable_path")))
+
+    try:
+        profile = db.get_active_profile()
+        seller_row = db.fetch_one("SELECT COUNT(*) AS cnt FROM seller_shops")
+        seed_row = db.fetch_one("SELECT COUNT(*) AS cnt FROM seed_pool_skus")
+        product_row = db.fetch_one("SELECT COUNT(*) AS cnt FROM sku_products")
+        add(
+            "OK",
+            "database",
+            (
+                f"profile={profile.name} host={profile.host}:{profile.port} db={profile.database} "
+                f"seller_shops={seller_row.get('cnt') if seller_row else '?'} "
+                f"seed_pool_skus={seed_row.get('cnt') if seed_row else '?'} "
+                f"sku_products={product_row.get('cnt') if product_row else '?'}"
+            ),
+        )
+        add(
+            "OK",
+            "database pool",
+            (
+                f"pool_pre_ping=True pool_recycle=600 "
+                f"read_timeout={settings.db_read_timeout}s write_timeout={settings.db_write_timeout}s"
+            ),
+        )
+    except Exception as exc:
+        add("FAIL", "database", summarize_exception(exc))
+
+    cdp_reachable = False
+    try:
+        cdp = browser.ping_cdp()
+        if cdp.get("reachable"):
+            cdp_reachable = True
+            add(
+                "OK",
+                "cdp browser",
+                f"{cdp.get('cdp_url')} contexts={cdp.get('context_count')} pages={cdp.get('page_count')}",
+            )
+        else:
+            add("FAIL", "cdp browser", str(cdp.get("reason") or cdp))
+    except Exception as exc:
+        add("FAIL", "cdp browser", summarize_exception(exc))
+
+    if not getattr(args, "skip_auth_check", False):
+        if not cdp_reachable:
+            add("FAIL", "browser auth checks", "cdp_not_reachable")
+        else:
+            try:
+                with browser.session():
+                    login = browser.check_login_status()
+                    add(
+                        "OK" if login.get("logged_in") else "FAIL",
+                        "browser login state",
+                        str(login),
+                    )
+                    maozi_auth = browser.maozi_auth_state()
+                    add(
+                        "OK" if maozi_auth.get("has_access_token") else "FAIL",
+                        "maozi web token",
+                        str({k: maozi_auth.get(k) for k in ("reason", "title", "url", "token_length")}),
+                    )
+                    captcha = browser.detect_captcha()
+                    add(
+                        "FAIL" if captcha.get("has_captcha") else "OK",
+                        "captcha",
+                        str(captcha),
+                    )
+                    challenge = browser.detect_challenge()
+                    add(
+                        "FAIL" if challenge.get("has_challenge") else "OK",
+                        "challenge",
+                        str(challenge),
+                    )
+            except Exception as exc:
+                add("FAIL", "browser auth checks", summarize_exception(exc))
+
+    print("doctor summary:")
+    for status, name, detail in checks:
+        print(f"  [{status}] {name}: {detail}")
+    failed = [name for status, name, _ in checks if status == "FAIL"]
+    if failed:
+        raise RuntimeError("doctor failed: " + ", ".join(failed))
+
+
 def cmd_launch_real_chrome(args: argparse.Namespace) -> None:
     client = build_browser_client(args, headless_override=False)
     info = client.describe()
@@ -3087,6 +3181,11 @@ def build_parser() -> argparse.ArgumentParser:
     show_browser_config = sub.add_parser("show-browser-config")
     add_browser_options(show_browser_config, include_headless=True)
     show_browser_config.set_defaults(func=cmd_show_browser_config)
+
+    doctor = sub.add_parser("doctor")
+    doctor.add_argument("--skip-auth-check", action="store_true")
+    add_browser_options(doctor, include_headless=True)
+    doctor.set_defaults(func=cmd_doctor)
 
     gui = sub.add_parser("gui")
     gui.set_defaults(func=cmd_open_gui)

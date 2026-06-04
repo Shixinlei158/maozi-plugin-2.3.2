@@ -30,11 +30,16 @@ python -m ozon_pipeline.cli gui
 # 4. 命令行模式
 python -m ozon_pipeline.cli crawl-top-list-network --cdp-url http://127.0.0.1:9222 --main-type hot --page-from 1 --page-to 20
 
-# 5. 无人值守长跑（选中的采集路径完成/空闲后继续下一轮）
+# 5. 运行前自检（DB / 9222 浏览器 / profile / 插件 / 毛子登录态）
+python -m ozon_pipeline.cli doctor --cdp-url http://127.0.0.1:9222
+
+# 6. 无人值守长跑（选中的采集路径完成/空闲后继续下一轮）
 python -m ozon_pipeline.cli expand-seller-backlog --cdp-url http://127.0.0.1:9222 --forever --idle-sleep-seconds 300
 ```
 
 **前置条件**：Chrome 浏览器已打开并登录毛子 ERP（`https://ozon.maozierp.com`），远程调试端口 9222 已启用。
+
+换设备或长跑前建议先执行 `doctor`。如果输出中存在 `FAIL`，先修复 DB、CDP、浏览器 profile、插件目录或毛子登录态，再启动采集。
 
 ---
 
