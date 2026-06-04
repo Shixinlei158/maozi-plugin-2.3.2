@@ -1023,6 +1023,24 @@ class BrowserOzonClient:
         except Exception:
             return ""
 
+    def reset_sticky_page(self, handler_name: str) -> None:
+        page = self._sticky_pages.pop(handler_name, None)
+        if page is None:
+            return
+        try:
+            if page.is_closed():
+                self._owned_sticky_page_ids.discard(id(page))
+                return
+            marker = self._page_marker(page)
+            if id(page) in self._owned_sticky_page_ids or marker.startswith(AUTOMATION_PAGE_NAME_PREFIX):
+                page.close()
+        except _CLEANUP_EXCEPTIONS:
+            pass
+        except Exception:
+            pass
+        finally:
+            self._owned_sticky_page_ids.discard(id(page))
+
     def _prune_unused_pages(self, context: Any, current_page: Any | None = None, force: bool = False) -> None:
         try:
             pages = list(context.pages)

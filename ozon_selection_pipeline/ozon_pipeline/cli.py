@@ -2133,8 +2133,9 @@ def prefetch_top_list_maozi_batch(
         raw = {}
         for retry_idx in range(max_retries + 1):
             start = datetime.now()
+            attempt_concurrency = max(1, resolved_concurrency // (2 ** retry_idx))
             try:
-                raw = browser.top_list_sku3_batch(chunk, concurrency=resolved_concurrency)
+                raw = browser.top_list_sku3_batch(chunk, concurrency=attempt_concurrency)
                 source = "top_list_batch"
                 elapsed_ms = int((datetime.now() - start).total_seconds() * 1000)
                 vlog(
@@ -2143,12 +2144,27 @@ def prefetch_top_list_maozi_batch(
                     f"chunk_size={len(chunk)}",
                     f"succeeded={len(raw)}",
                     f"missing={len(chunk) - len(raw)}",
-                    f"concurrency={resolved_concurrency}",
+                    f"concurrency={attempt_concurrency}",
                     f"elapsed_ms={elapsed_ms}",
                     f"retry_used={retry_idx}",
                     prefix="top-list",
                 )
                 success_rate = (len(raw) / len(chunk)) if chunk else 0.0
+                if success_rate < settings.top_list_sku3_batch_min_success_rate and retry_idx < max_retries:
+                    batch_no = index // resolved_batch_size + 1
+                    total_batches = (len(skus) + resolved_batch_size - 1) // resolved_batch_size
+                    print(
+                        f"  [sku3] 批{batch_no}/{total_batches}: 低成功率重试"
+                        f"{retry_idx + 1}/{max_retries} ok={len(raw)}/{len(chunk)}"
+                        f" concurrency={attempt_concurrency} ({elapsed_ms}ms)"
+                    )
+                    try:
+                        browser._cached_maozi_token = None
+                        browser.reset_sticky_page("_fetch_top_list_sku3_batch")
+                    except Exception:
+                        pass
+                    time.sleep(retry_delay_seconds * (retry_idx + 1))
+                    continue
                 if success_rate < settings.top_list_sku3_batch_min_success_rate:
                     low_yield_streak += 1
                 else:
@@ -2164,7 +2180,10 @@ def prefetch_top_list_maozi_batch(
                 batch_no = index // resolved_batch_size + 1
                 total_batches = (len(skus) + resolved_batch_size - 1) // resolved_batch_size
                 if retry_idx < max_retries:
-                    print(f"  [sku3] 批{batch_no}/{total_batches}: 重试{retry_idx+1}/{max_retries} ({elapsed_ms}ms) err={summarize_exception(exc)[:80]}")
+                    print(
+                        f"  [sku3] 批{batch_no}/{total_batches}: 重试{retry_idx+1}/{max_retries}"
+                        f" concurrency={attempt_concurrency} ({elapsed_ms}ms) err={summarize_exception(exc)[:80]}"
+                    )
                     vlog(
                         "top-list batch sku3 retryable error:",
                         f"chunk_start={index}",
@@ -2184,7 +2203,7 @@ def prefetch_top_list_maozi_batch(
                             f"elapsed_ms={elapsed_ms}",
                             prefix="top-list",
                         )
-                        raw = browser.top_list_sku3_batch(chunk, concurrency=resolved_concurrency)
+                        raw = browser.top_list_sku3_batch(chunk, concurrency=attempt_concurrency)
                         source = "top_list_batch"
                     else:
                         print(f"  [sku3] 批{batch_no}/{total_batches}: 永久失败 ({elapsed_ms}ms) err={summarize_exception(exc)[:80]}")
