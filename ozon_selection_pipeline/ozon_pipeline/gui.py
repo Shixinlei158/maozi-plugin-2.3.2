@@ -340,6 +340,8 @@ class App:
                        tooltip="无人值守循环在无任务、完成一轮或认证恢复失败后的等待时间。建议：300")
         self._add_param(tab_core, 3, 1, "轮次间隔秒数", "cycle_sleep_seconds", str(settings.collection_cycle_sleep_seconds), "int", min_val=1, max_val=86400,
                        tooltip="正常完成一轮采集后的等待时间。建议：60")
+        self._add_param(tab_core, 4, 0, "异常等待秒数", "error_sleep_seconds", str(settings.collection_error_sleep_seconds), "int", min_val=1, max_val=86400,
+                       tooltip="无人值守采集中出现运行异常后的等待时间。建议：300")
 
         # Tab 2: 并发控制
         self._add_param(tab_conc, 0, 0, "SKU3 批量大小 (batch_size)", "batch_size", str(settings.top_list_sku3_batch_size), "int", min_val=1, max_val=100,
@@ -676,6 +678,7 @@ class App:
             "forever": True,
             "idle_sleep_seconds": str(settings.collection_idle_sleep_seconds),
             "cycle_sleep_seconds": str(settings.collection_cycle_sleep_seconds),
+            "error_sleep_seconds": str(settings.collection_error_sleep_seconds),
             "batch_size": str(settings.top_list_sku3_batch_size),
             "concurrency": str(settings.top_list_sku3_batch_concurrency),
             "chunk_delay_ms": str(settings.top_list_sku3_batch_chunk_delay_ms),
@@ -1134,6 +1137,7 @@ class App:
                 "forever": True,
                 "idle_sleep_seconds": settings.collection_idle_sleep_seconds,
                 "cycle_sleep_seconds": settings.collection_cycle_sleep_seconds,
+                "error_sleep_seconds": settings.collection_error_sleep_seconds,
             }
             full_params.update(user_params)
             

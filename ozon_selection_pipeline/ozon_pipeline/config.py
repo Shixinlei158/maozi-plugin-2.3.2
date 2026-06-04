@@ -186,6 +186,7 @@ class Settings:
     seller_write_minimal: bool = os.getenv("SELLER_WRITE_MINIMAL", "true").lower() in {"1", "true", "yes"}
     collection_idle_sleep_seconds: int = int(os.getenv("COLLECTION_IDLE_SLEEP_SECONDS", "300"))
     collection_cycle_sleep_seconds: int = int(os.getenv("COLLECTION_CYCLE_SLEEP_SECONDS", "60"))
+    collection_error_sleep_seconds: int = int(os.getenv("COLLECTION_ERROR_SLEEP_SECONDS", "300"))
     feishu_webhook_url: str = os.getenv("FEISHU_WEBHOOK_URL", "")
 
 

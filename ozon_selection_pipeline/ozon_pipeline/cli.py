@@ -128,6 +128,34 @@ def wait_for_collection_retry(
     return not collection_stop_requested(args)
 
 
+def handle_unattended_runtime_error(
+    args: argparse.Namespace,
+    mode: str,
+    exc: Exception,
+    *,
+    round_no: int = 0,
+    extra_fields: list[dict[str, str]] | None = None,
+) -> bool:
+    if not collection_forever_enabled(args):
+        return False
+    detail = summarize_exception(exc)
+    log_line(f"{mode} 运行异常，无人值守模式将休眠后继续:", detail, prefix="recover")
+    notify_collection_warning(
+        mode,
+        "运行异常，休眠后继续",
+        round_no=round_no,
+        detail=detail,
+        extra_fields=extra_fields,
+    )
+    wait_for_collection_retry(
+        args,
+        f"{mode} runtime error: {detail}",
+        default_seconds=settings.collection_error_sleep_seconds,
+        seconds_attr="error_sleep_seconds",
+    )
+    return True
+
+
 def should_defer_for_pending_refresh(metric: dict[str, Any], reasons: list[str]) -> bool:
     if not (metric.get("status_update_sales") or metric.get("status_update_variant")):
         return False
@@ -1480,14 +1508,19 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
         if collection_stop_requested(args):
             print("seed-pool stop requested: exiting before next round")
             break
-        cached_items, due_items = due_seed_pool_items(
-            query_key=args.query_key or None,
-            source_type=args.source_type,
-            process_limit=args.process_limit,
-            retry_failed_now=retry_failed_now,
-            retry_deferred_now=retry_deferred_now,
-            retry_rejected_now=retry_rejected_now,
-        )
+        try:
+            cached_items, due_items = due_seed_pool_items(
+                query_key=args.query_key or None,
+                source_type=args.source_type,
+                process_limit=args.process_limit,
+                retry_failed_now=retry_failed_now,
+                retry_deferred_now=retry_deferred_now,
+                retry_rejected_now=retry_rejected_now,
+            )
+        except Exception as exc:
+            if handle_unattended_runtime_error(args, "seed-pool网络", exc):
+                continue
+            raise
         vlog(
             "due items preview:",
             [f"{item['sku']}:{item.get('_due_reason')}" for item in due_items[:10]],
@@ -1592,6 +1625,19 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
                 except EOFError:
                     time.sleep(30)
             retry_failed_now = True
+        except Exception as exc:
+            if handle_unattended_runtime_error(
+                args,
+                "seed-pool网络",
+                exc,
+                extra_fields=[
+                    {"label": "累计处理种子SKU", "value": str(stats.get("processed_skus", "N/A"))},
+                    {"label": "累计达标SKU", "value": str(stats.get("qualified_skus", "N/A"))},
+                ],
+            ):
+                retry_failed_now = True
+                continue
+            raise
     seller_stats = stats["seller_stats"]
     print(
         "seed-pool expansion summary:",
@@ -1658,7 +1704,22 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
                 round_process_limit = min(round_process_limit, remaining_total)
             else:
                 round_process_limit = remaining_total
-        due_sellers = list_due_seller_shops(process_limit=round_process_limit)
+        try:
+            due_sellers = list_due_seller_shops(process_limit=round_process_limit)
+        except Exception as exc:
+            if handle_unattended_runtime_error(
+                args,
+                "卖家列表循环",
+                exc,
+                round_no=round_no,
+                extra_fields=[
+                    {"label": "累计处理卖家", "value": str(total_processed)},
+                    {"label": "累计SKU", "value": str(total_skus)},
+                    {"label": "累计达标", "value": str(total_qualified)},
+                ],
+            ):
+                continue
+            raise
         vlog(
             "seller backlog preview:",
             [f"{item.get('seller_key')}:{item.get('home_url')}" for item in due_sellers[:10]],
@@ -1775,6 +1836,21 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
                     except EOFError:
                         time.sleep(30)
                 continue
+        except Exception as exc:
+            if handle_unattended_runtime_error(
+                args,
+                "卖家列表循环",
+                exc,
+                round_no=round_no,
+                extra_fields=[
+                    {"label": "累计处理卖家", "value": str(total_processed)},
+                    {"label": "累计SKU", "value": str(total_skus)},
+                    {"label": "累计达标", "value": str(total_qualified)},
+                    {"label": "累计拒绝", "value": str(total_rejected)},
+                ],
+            ):
+                continue
+            raise
 
         round_no += 1
         total_processed += stats["processed_sellers"]
@@ -1958,7 +2034,12 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
         if collection_stop_requested(args):
             print("top-list stop requested: exiting before next round")
             break
-        _crawl_top_list_network_once(args)
+        try:
+            _crawl_top_list_network_once(args)
+        except Exception as exc:
+            if handle_unattended_runtime_error(args, "榜单采集", exc):
+                continue
+            raise
         if not collection_forever_enabled(args):
             break
         if not wait_for_collection_retry(
@@ -2122,7 +2203,12 @@ def cmd_multi_category_network(args: argparse.Namespace) -> None:
         if collection_stop_requested(args):
             print("multi-category stop requested: exiting before next round")
             break
-        _multi_category_network_once(args)
+        try:
+            _multi_category_network_once(args)
+        except Exception as exc:
+            if handle_unattended_runtime_error(args, "多类目采集", exc):
+                continue
+            raise
         if not collection_forever_enabled(args):
             break
         if not wait_for_collection_retry(
@@ -2265,6 +2351,7 @@ def add_unattended_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--forever", action="store_true", help="keep the selected collection path running after idle/completed rounds")
     parser.add_argument("--idle-sleep-seconds", type=int, default=settings.collection_idle_sleep_seconds)
     parser.add_argument("--cycle-sleep-seconds", type=int, default=settings.collection_cycle_sleep_seconds)
+    parser.add_argument("--error-sleep-seconds", type=int, default=settings.collection_error_sleep_seconds)
 
 
 def add_top_list_options(parser: argparse.ArgumentParser) -> None:
