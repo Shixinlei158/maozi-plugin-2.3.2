@@ -149,7 +149,7 @@ def cmd_import_seeds(args: argparse.Namespace) -> None:
                 sku = row.get("sku") or row.get("SKU")
                 if sku:
                     try:
-                        upsert_seed_sku(str(sku).strip(), 来源=args.source)
+                        upsert_seed_sku(str(sku).strip(), source=args.source)
                         count += 1
                     except Exception as exc:
                         print(f"  warn: failed to import seed sku {sku}: {exc}")
@@ -158,7 +158,7 @@ def cmd_import_seeds(args: argparse.Namespace) -> None:
             sku = line.strip()
             if sku:
                 try:
-                    upsert_seed_sku(sku, 来源=args.source)
+                    upsert_seed_sku(sku, source=args.source)
                     count += 1
                 except Exception as exc:
                     print(f"  warn: failed to import seed sku {sku}: {exc}")
@@ -242,7 +242,7 @@ def cmd_fetch_sku(args: argparse.Namespace) -> None:
     client = MaoziClient()
     browser = build_browser_client(args)
     with browser.session():
-        result = process_sku(args.sku, client, browser, 来源="manual_fetch")
+        result = process_sku(args.sku, client, browser, source="manual_fetch")
     if result.get("transient_failed"):
         print("deferred sku:", result["sku"], result["rule_reason"])
         return
@@ -252,9 +252,9 @@ def cmd_fetch_sku(args: argparse.Namespace) -> None:
     print(
         "stored qualified sku:",
         result["sku"],
-        "数据来源=",
+        "maozi_source=",
         result["maozi_source"],
-        "seller_跟卖=",
+        "seller_offers=",
         result["seller_offer_count"],
         "update_sales=",
         bool(result["status_update_sales"]),
@@ -446,7 +446,7 @@ def run_seller_network(
                     continue
                 items = result.get("items") or []
                 if items and _seller_looks_branded(items):
-                    print(f"  【跳过-品牌卖家】 (shallow): {url[:80]} | name={s.get('name','?')}")
+                    print(f"  skip branded seller (shallow): {url[:80]} | name={s.get('name','?')}")
                     from .repository import upsert_seller_shop as _upsert_shop
                     _upsert_shop(url, name=s.get("name"))
                     db.execute(
@@ -492,7 +492,7 @@ def run_seller_network(
                 skipped_recent += 1
                 shop = get_seller_shop(key) or {}
                 print(
-                    "【跳过-近期采集】",
+                    "skip recent seller:",
                     url,
                     "| name=",
                     shop.get("name") or name or "<unknown>",
@@ -503,7 +503,7 @@ def run_seller_network(
             if result is None:
                 consecutive_failures += 1
                 print(
-                    "【跳过-加载失败】",
+                    "skip seller (load failed):",
                     url,
                     f"| 连续失败={consecutive_failures}",
                 )
@@ -530,7 +530,7 @@ def run_seller_network(
             raw_count = len(items)
             items = [it for it in items if _seller_item_passes_prefilter(it)]
             if raw_count != len(items):
-                print(f"  【价格预筛】 {raw_count}→{len(items)} (过滤{raw_count - len(items)}条)")
+                print(f"  prefilter: {raw_count}→{len(items)} (过滤{raw_count - len(items)}条)")
             source = result.get("source") or "unknown"
             vlog(
                 "seller page detail:",
@@ -545,15 +545,15 @@ def run_seller_network(
                 prefix="seller",
             )
             print(
-                "【抓取卖家】",
+                "crawl seller:",
                 url,
-                "| 深度=",
+                "| depth=",
                 depth,
-                "| 来源=",
+                "| source=",
                 source,
-                "| 商品=",
+                "| items=",
                 len(items),
-                "| 抓取耗时=",
+                "| crawl=",
                 f"{crawl_elapsed:.1f}s",
             )
 
@@ -573,16 +573,16 @@ def run_seller_network(
         try:
             prepared_items = bulk_upsert_seller_home_skus(url, selected_items)
             if not settings.seller_fast_mode or settings.seller_seed_skus_from_home:
-                bulk_upsert_seed_skus([sku for sku, _ in prepared_items], 来源=f"seller_home:{url}")
+                bulk_upsert_seed_skus([sku for sku, _ in prepared_items], source=f"seller_home:{url}")
             home_rows_saved = len(prepared_items)
             prepare_elapsed = time.perf_counter() - prepare_stage_start
             print(
-                "【暂存完成】",
+                "seller home skus prepared:",
                 f"seller={url}",
-                f"raw_商品={len(items)}",
-                f"筛选后={len(selected_items)}",
-                f"已存={home_rows_saved}",
-                "模式=批量",
+                f"raw_items={len(items)}",
+                f"selected={len(selected_items)}",
+                f"saved={home_rows_saved}",
+                "mode=batch",
                 f"elapsed={prepare_elapsed:.1f}s",
             )
         except Exception as exc:
@@ -604,7 +604,7 @@ def run_seller_network(
                     print("DEBUG: upsert_seller_home_sku returned empty sku for item:", item.get("title"))
                     continue
                 try:
-                    upsert_seed_sku(sku, 来源=f"seller_home:{url}")
+                    upsert_seed_sku(sku, source=f"seller_home:{url}")
                 except Exception as seed_exc:
                     vlog("seed_sku upsert failed:", f"sku={sku}", f"error={seed_exc}", prefix="seller")
                     print("DEBUG: seed_sku upsert failed:", seed_exc)
@@ -619,11 +619,11 @@ def run_seller_network(
         if not prepared_items:
                 prepare_elapsed = time.perf_counter() - prepare_stage_start
                 print(
-                    "【暂存完成】",
+                    "seller home skus prepared:",
                     f"seller={url}",
-                    f"raw_商品={len(items)}",
-                    f"筛选后={len(selected_items)}",
-                    f"已存={home_rows_saved}",
+                    f"raw_items={len(items)}",
+                    f"selected={len(selected_items)}",
+                    f"saved={home_rows_saved}",
                     "mode=fallback",
                     f"elapsed={prepare_elapsed:.1f}s",
                 )
@@ -640,16 +640,16 @@ def run_seller_network(
                 )
                 prefetch_elapsed = time.perf_counter() - prefetch_start
                 print(
-                    "【指标获取】",
+                    "prefetch SKU3 batch:",
                     f"seller={url}",
-                    f"请求={len(prepared_items)}",
-                    f"获取={len(seller_prefetched_maozi)}",
+                    f"requested={len(prepared_items)}",
+                    f"fetched={len(seller_prefetched_maozi)}",
                     f"elapsed={prefetch_elapsed:.1f}s",
                 )
                 vlog(
                     "seller-home batch sku3 prefetched:",
                     f"seller={url}",
-                    f"请求={len(prepared_items)}",
+                    f"requested={len(prepared_items)}",
                     f"succeeded={len(seller_prefetched_maozi)}",
                     prefix="seller",
                 )
@@ -669,7 +669,7 @@ def run_seller_network(
                 "skip seller:",
                 url,
                 "| reason= batch sku3 requires CDP browser",
-                "| 请求=",
+                "| requested=",
                 len(prepared_items),
             )
             mark_seller_collected(key, qualified_count=0)
@@ -679,7 +679,7 @@ def run_seller_network(
             print(
                 "WARN: seller batch SKU3 prefetch failed, falling back to individual SKU processing:",
                 f"seller={url}",
-                f"| 请求={len(prepared_items)}",
+                f"| requested={len(prepared_items)}",
             )
 
         if not prepared_items:
@@ -740,7 +740,7 @@ def run_seller_network(
                     sku,
                     maozi,
                     browser,
-                    来源=f"seller_home:{url}",
+                    source=f"seller_home:{url}",
                     product_snapshot_override=product_snapshot_override,
                     batch_only_mode=True,
                     skip_db=True,
@@ -750,7 +750,7 @@ def run_seller_network(
                 sku,
                 maozi,
                 browser,
-                来源=f"seller_home:{url}",
+                source=f"seller_home:{url}",
                 product_snapshot_override=product_snapshot_override,
                 prefetched_maozi=prefetched,
                 batch_only_mode=True,
@@ -830,7 +830,7 @@ def run_seller_network(
                     consume_seller_home_result(future.result())
             rule_elapsed = time.perf_counter() - rule_start
         print(
-            "【判定完成】",
+            "phase: rule evaluation done:",
             f"seller={url}",
             f"skus={seller_skus}",
             f"workers={effective_workers if seller_sku_workers > 1 and len(prepared_items) > 1 else 1}",
@@ -841,14 +841,14 @@ def run_seller_network(
         if seller_results:
             db_write_start = time.perf_counter()
             print(
-                "【写库开始】",
+                "phase: bulk write start:",
                 f"seller={url}",
                 f"rows={len(seller_results)}",
             )
-            write_summary = bulk_upsert_sku_results(seller_results, 来源=f"seller_home:{url}")
+            write_summary = bulk_upsert_sku_results(seller_results, source=f"seller_home:{url}")
             db_write_elapsed = time.perf_counter() - db_write_start
             print(
-                "【写库完成】",
+                "phase: bulk write results:",
                 f"seller={url}",
                 f"total={write_summary['total']}",
                 f"metrics={write_summary['metrics']}",
@@ -865,13 +865,13 @@ def run_seller_network(
         consecutive_failures = 0  # 成功处理，重置连续失败计数
         total_elapsed = time.perf_counter() - crawl_start
         print(
-            "【卖家汇总】",
+            "seller summary:",
             f"skus={seller_skus}",
-            f"合格={seller_qualified}",
-            f"淘汰={seller_rejected}",
-            f"暂缓={seller_deferred}(fetch_fail={seller_deferred_fetch_failed}|incomplete={seller_deferred_data_incomplete})",
+            f"qualified={seller_qualified}",
+            f"rejected={seller_rejected}",
+            f"deferred={seller_deferred}(fetch_fail={seller_deferred_fetch_failed}|incomplete={seller_deferred_data_incomplete})",
             f"skipped={seller_skipped}",
-            f"跟卖={seller_offer_rows}",
+            f"offers={seller_offer_rows}",
             f"total={total_elapsed:.1f}s",
         )
 
@@ -942,7 +942,7 @@ def print_browser_runtime_notice(browser: BrowserOzonClient) -> None:
         print(
             "browser mode:",
             f"attach_existing_cdp={browser.cdp_url}",
-            "| 当前窗口复用中",
+            "| this command will reuse your manually started browser and will not open a new window",
         )
         if is_verbose():
             try:
@@ -951,7 +951,7 @@ def print_browser_runtime_notice(browser: BrowserOzonClient) -> None:
             except Exception as exc:
                 vlog("cdp ping failed during runtime notice:", exc, prefix="runtime")
         return
-    print("【浏览模式】独立启动 | 无CDP配置")
+    print("browser mode: launch_own_context | no CDP browser configured; Playwright will launch its own context")
 
 
 def preflight_seed_pool_maozi_access(
@@ -964,13 +964,13 @@ def preflight_seed_pool_maozi_access(
         return {}
 
     probe_sku = str(due_items[0]["sku"])
-    vlog("preflight start:", f"probe_sku={probe_sku}", f"due_商品={len(due_items)}", prefix="preflight")
+    vlog("preflight start:", f"probe_sku={probe_sku}", f"due_items={len(due_items)}", prefix="preflight")
     if browser.cdp_url:
         while True:
             try:
                 browser.ping_cdp()
                 response, source = load_top_list_maozi_sku3(probe_sku, maozi, browser)
-                print("【API预检】", f"sku={probe_sku}", f"数据来源={source}", "状态=正常")
+                print("browser preflight:", f"sku={probe_sku}", f"maozi_source={source}", "status=ok")
                 if is_verbose():
                     metric = parse_sku3_response(probe_sku, response)
                     vlog(
@@ -986,7 +986,7 @@ def preflight_seed_pool_maozi_access(
                     )
                 return {probe_sku: (response, source)}
             except Exception as exc:
-                print("【API预检失败】", exc)
+                print("browser preflight failed:", exc)
                 print(
                     "manual action required: keep the current browser window open, confirm Ozon and Maozi are logged in, "
                     "then press Enter to retry. Press Ctrl+C to stop this run."
@@ -1000,7 +1000,7 @@ def preflight_seed_pool_maozi_access(
             "seed-pool preflight failed before processing the first SKU. Please confirm the browser context can reach "
             "Ozon and Maozi, then rerun."
         ) from exc
-    print("【API预检】", f"sku={probe_sku}", f"数据来源={source}", "状态=正常")
+    print("browser preflight:", f"sku={probe_sku}", f"maozi_source={source}", "status=ok")
     return {probe_sku: (response, source)}
 
 
@@ -1132,7 +1132,7 @@ def expand_seed_pool_items(
             deque(batch),
             browser=browser,
             maozi=maozi,
-            max_深度=max_depth,
+            max_depth=max_depth,
             max_sellers=remaining_seller_budget,
             sku_limit=sku_limit,
             max_scrolls=max_scrolls,
@@ -1198,7 +1198,7 @@ def expand_seed_pool_items(
             for row in rows:
                 add_pool_mark(row, sku, "rejected", reason=reason)
             print(
-                "【种子】",
+                "seed sku:",
                 sku,
                 "| prefiltered-rejected |",
                 item.get("_due_reason"),
@@ -1253,10 +1253,10 @@ def expand_seed_pool_items(
             vlog(
                 "seed worker finish:",
                 f"sku={sku}",
-                f"合格={sku_result.get('qualified')}",
-                f"strict_合格={sku_result.get('strict_qualified')}",
-                f"跟卖={sku_result.get('seller_offer_count')}",
-                f"数据来源={sku_result.get('maozi_source')}",
+                f"qualified={sku_result.get('qualified')}",
+                f"strict_qualified={sku_result.get('strict_qualified')}",
+                f"offers={sku_result.get('seller_offer_count')}",
+                f"maozi_source={sku_result.get('maozi_source')}",
                 f"elapsed_ms={elapsed_ms}",
                 prefix="seed",
             )
@@ -1279,7 +1279,7 @@ def expand_seed_pool_items(
                 add_pool_mark(row, sku, "failed", reason=reason)
             if needs_manual_intervention(reason):
                 raise ManualInterventionRequired(reason)
-            print("【种子】", sku, "| failed |", error)
+            print("seed sku:", sku, "| failed |", error)
             return
 
         sku_result = result["sku_result"]
@@ -1292,11 +1292,11 @@ def expand_seed_pool_items(
             if needs_manual_intervention(reason):
                 raise ManualInterventionRequired(reason)
             print(
-                "【种子】",
+                "seed sku:",
                 sku,
                 "| deferred | due=",
                 item.get("_due_reason"),
-                "| 跟卖=",
+                "| offers=",
                 sku_result["seller_offer_count"],
                 "|",
                 reason,
@@ -1328,13 +1328,13 @@ def expand_seed_pool_items(
             add_pool_mark(row, sku, status, reason=sku_result["rule_reason"],
                         seller_offer_count=sku_result["seller_offer_count"] or None)
         print(
-            "【种子】",
+            "seed sku:",
             sku,
             "|",
             status,
             "| due=",
             item.get("_due_reason"),
-            "| 跟卖=",
+            "| offers=",
             sku_result["seller_offer_count"],
             "|",
             sku_result["rule_reason"],
@@ -1386,7 +1386,7 @@ def cmd_crawl_seller_network(args: argparse.Namespace) -> None:
             deque([{"url": args.url, "depth": 0, "name": args.name or None}]),
             browser=browser,
             maozi=maozi,
-            max_深度=args.max_depth,
+            max_depth=args.max_depth,
             max_sellers=args.max_sellers,
             sku_limit=args.sku_limit,
             max_scrolls=args.max_scrolls,
@@ -1401,7 +1401,7 @@ def cmd_crawl_seller_network(args: argparse.Namespace) -> None:
         f"qualified_skus={stats['qualified_skus']}",
         f"rejected_skus={stats['rejected_skus']}",
         f"deferred_skus={stats['deferred_skus']}",
-        f"seller_跟卖={stats['seller_offers']}",
+        f"seller_offers={stats['seller_offers']}",
     )
 
 
@@ -1428,7 +1428,7 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
             prefix="expand",
         )
         print(
-            "【种子池】",
+            "seed-pool summary:",
             f"source_type={args.source_type}",
             f"query_key={args.query_key or '<all>'}",
             f"cached_rows={len(cached_items)}",
@@ -1442,7 +1442,7 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
                     browser=browser,
                     maozi=maozi,
                     source_type=args.source_type,
-                    max_深度=args.max_depth,
+                    max_depth=args.max_depth,
                     max_sellers=args.max_sellers,
                     sku_limit=args.sku_limit,
                     max_scrolls=args.max_scrolls,
@@ -1553,9 +1553,9 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
             prefix="seller-backlog",
         )
         print(
-            f"【卖家网络 第 {round_no + 1} due:",
-            f"获取={len(due_sellers)}",
-            f"上限={args.process_limit}",
+            f"expand-network round {round_no + 1} due:",
+            f"fetched={len(due_sellers)}",
+            f"process_limit={args.process_limit}",
         )
         if not due_sellers:
             print("expand-network complete: no more due seller pages to process")
@@ -1582,7 +1582,7 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
                     queue,
                     browser=browser,
                     maozi=maozi,
-                    max_深度=args.max_depth,
+                    max_depth=args.max_depth,
                     max_sellers=args.max_sellers,
                     sku_limit=args.sku_limit,
                     max_scrolls=args.max_scrolls,
@@ -1653,14 +1653,14 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
         total_offers += stats["seller_offers"]
 
         print(
-            f"【卖家网络 第 {round_no} done:",
+            f"expand-network round {round_no} done:",
             f"sellers={stats['processed_sellers']}",
             f"queued={stats['queued_sellers']}",
             f"skus={stats['total_skus']}",
-            f"合格={stats['qualified_skus']}",
-            f"淘汰={stats['rejected_skus']}",
-            f"暂缓={stats['deferred_skus']}(fetch_fail={stats.get('deferred_fetch_failed',0)}|incomplete={stats.get('deferred_data_incomplete',0)})",
-            f"跟卖={stats['seller_offers']}",
+            f"qualified={stats['qualified_skus']}",
+            f"rejected={stats['rejected_skus']}",
+            f"deferred={stats['deferred_skus']}(fetch_fail={stats.get('deferred_fetch_failed',0)}|incomplete={stats.get('deferred_data_incomplete',0)})",
+            f"offers={stats['seller_offers']}",
         )
 
         if stats.get("queued_sellers", 0) == 0 and stats.get("processed_sellers", 0) == 0:
@@ -1689,15 +1689,15 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
         consecutive_empty_rounds = 0
 
     print(
-        "【卖家网络 汇总】",
+        "expand-network final summary:",
         f"rounds={round_no}",
         f"total_sellers_processed={total_processed}",
         f"total_sellers_queued={total_queued}",
         f"total_skus={total_skus}",
-        f"total_合格={total_qualified}",
-        f"total_淘汰={total_rejected}",
-        f"total_暂缓={total_deferred}(fetch_fail={total_deferred_fetch_failed}|incomplete={total_deferred_data_incomplete})",
-        f"total_跟卖={total_offers}",
+        f"total_qualified={total_qualified}",
+        f"total_rejected={total_rejected}",
+        f"total_deferred={total_deferred}(fetch_fail={total_deferred_fetch_failed}|incomplete={total_deferred_data_incomplete})",
+        f"total_offers={total_offers}",
     )
 
 
@@ -1726,7 +1726,7 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
             # === 阶段1: 逐页拉取+即时处理 ===
             cached_run = None if args.force_refresh else get_recent_top_list_run(query_key, refresh_hours)
             if cached_run:
-                print(f"【复用榜单缓存】 run_id={cached_run['id']} within_hours={refresh_hours}")
+                print(f"reuse cached top-list snapshot: run_id={cached_run['id']} within_hours={refresh_hours}")
             else:
                 for page_no in range(page_from, page_to + 1):
                     t_page = time.perf_counter()
@@ -1745,7 +1745,7 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                     t_db = time.perf_counter()
                     pages_fetched += 1
                     items_fetched += len(items)
-                    print(f"【榜单页】 {page_no}/{payload.get('last_page','?')} | 商品={len(items)} | api={t_api-t_page:.1f}s | db={t_db-t_api:.1f}s")
+                    print(f"top-list page: {page_no}/{payload.get('last_page','?')} | items={len(items)} | api={t_api-t_page:.1f}s | db={t_db-t_api:.1f}s")
                     # 逐页即时处理：预筛+SKU3+种子判定+卖家扩展
                     from .repository import top_list_snapshot_hash
                     page_items = []
@@ -1759,7 +1759,7 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                         print(f"  page seeds: {len(page_items)}→{len(pf_result)} after prefilter")
                         stats = expand_seed_pool_items(
                             pf_result, browser=browser, maozi=maozi, source_type="top_list",
-                            max_深度=args.max_depth, max_sellers=args.max_sellers,
+                            max_depth=args.max_depth, max_sellers=args.max_sellers,
                             sku_limit=args.sku_limit, max_scrolls=args.max_scrolls,
                             seed_sku_workers=args.seed_sku_workers, seller_sku_workers=args.seller_sku_workers,
                             prefetched_maozi=None,
@@ -1773,26 +1773,26 @@ def cmd_crawl_top_list_network(args: argparse.Namespace) -> None:
                     if page_no >= last_page:
                         break
 
-            finish_top_list_run(run_id, status="success", pages_获取=pages_fetched, items_获取=items_fetched,
+            finish_top_list_run(run_id, status="success", pages_fetched=pages_fetched, items_fetched=items_fetched,
                                due_skus=total_seeds, processed_skus=total_seeds,
                                qualified_skus=total_qualified, rejected_skus=0,
                                seller_expansions=total_sellers)
 
     except ManualInterventionRequired:
-        finish_top_list_run(run_id, status="failed", pages_获取=pages_fetched, items_获取=items_fetched)
+        finish_top_list_run(run_id, status="failed", pages_fetched=pages_fetched, items_fetched=items_fetched)
         raise
     except Exception as exc:
-        finish_top_list_run(run_id, status="failed", pages_获取=pages_fetched, items_获取=items_fetched,
+        finish_top_list_run(run_id, status="failed", pages_fetched=pages_fetched, items_fetched=items_fetched,
                            error_message=str(exc)[:512])
         notify_collection_failed("榜单采集", detail=f"run_id={run_id}", exc=exc)
         raise
 
     # === 阶段2: 卖家后台循环消化（独立session，不嵌套） ===
     if total_sellers > 0 or args.max_depth != 0:
-        print(f"【卖家队列】 | seeds_processed={total_seeds} 合格={total_qualified} running...")
+        print(f"phase: seller backlog | seeds_processed={total_seeds} qualified={total_qualified} running...")
         cmd_expand_seller_backlog(args)
     else:
-        print("无新增卖家, skip seller backlog phase")
+        print("no sellers expanded, skip seller backlog phase")
 
 def cmd_multi_category_network(args: argparse.Namespace) -> None:
     """多类目遍历采集模式：遍历ozon_categories指定层级的类目，每个类目独立拉取榜单并处理种子"""
@@ -1909,7 +1909,7 @@ def cmd_multi_category_network(args: argparse.Namespace) -> None:
                 if due_items and not args.skip_process:
                     expansion_stats = expand_seed_pool_items(
                         due_items, browser=browser, maozi=maozi, source_type="top_list",
-                        max_深度=args.max_depth, max_sellers=args.max_sellers,
+                        max_depth=args.max_depth, max_sellers=args.max_sellers,
                         sku_limit=args.sku_limit, max_scrolls=args.max_scrolls,
                         seed_sku_workers=args.seed_sku_workers, seller_sku_workers=args.seller_sku_workers,
                         prefetched_maozi=preflight_seed_pool_maozi_access(due_items, browser=browser, maozi=maozi),
@@ -1922,7 +1922,7 @@ def cmd_multi_category_network(args: argparse.Namespace) -> None:
                                       "rejected_skus": 0, "seller_stats": {"processed_sellers": 0}}
 
                 finish_top_list_run(run_id, status="success",
-                                   pages_获取=cat_pages, items_获取=cat_items,
+                                   pages_fetched=cat_pages, items_fetched=cat_items,
                                    due_skus=len(due_items),
                                    processed_skus=expansion_stats["processed_skus"] + expansion_stats["prefiltered_skus"],
                                    qualified_skus=expansion_stats["qualified_skus"],
@@ -1933,11 +1933,11 @@ def cmd_multi_category_network(args: argparse.Namespace) -> None:
 
             except Exception:
                 finish_top_list_run(run_id, status="failed",
-                                   pages_获取=cat_pages, items_获取=cat_items)
+                                   pages_fetched=cat_pages, items_fetched=cat_items)
                 raise
 
     t_total = time.perf_counter() - t_start
-    print(f"multi-category summary: categories={len(categories)} pages={total_pages} 商品={total_items} seeds_processed={total_seeds} 合格={total_qualified} sellers={total_sellers} elapsed={t_total:.1f}s")
+    print(f"multi-category summary: categories={len(categories)} pages={total_pages} items={total_items} seeds_processed={total_seeds} qualified={total_qualified} sellers={total_sellers} elapsed={t_total:.1f}s")
 
 
 
@@ -2154,7 +2154,7 @@ def prefetch_top_list_maozi_batch(
                 f"chunk_start={index}",
                 f"succeeded={len(raw)}",
                 f"chunk_size={len(chunk)}",
-                f"remaining_暂缓={remaining}",
+                f"remaining_deferred={remaining}",
             )
             break
         
@@ -2216,7 +2216,7 @@ def process_top_list_sku(
     browser: BrowserOzonClient,
     prefetched_maozi: tuple[dict[str, Any], str] | None = None,
 ) -> dict[str, Any]:
-    vlog("process_top_list_sku start:", f"sku={sku}", f"pre获取={prefetched_maozi is not None}", prefix="top-list")
+    vlog("process_top_list_sku start:", f"sku={sku}", f"prefetched={prefetched_maozi is not None}", prefix="top-list")
     if prefetched_maozi is None:
         try:
             response, maozi_source = load_top_list_maozi_sku3(sku, maozi, browser)
@@ -2290,7 +2290,7 @@ def process_top_list_sku(
         try:
             offers = load_seller_offers(sku, browser)
             seller_offer_count = len(offers)
-            vlog("top-list offers fetched:", f"sku={sku}", f"跟卖={seller_offer_count}", prefix="top-list")
+            vlog("top-list offers fetched:", f"sku={sku}", f"offers={seller_offer_count}", prefix="top-list")
             preview_rule = evaluate_selection_rule(
                 metric_preview,
                 product_snapshot,
@@ -2348,7 +2348,7 @@ def process_top_list_sku(
             product_data=product_snapshot,
             metric=metric_preview,
             plugin_card=plugin_card,
-            跟卖=offers,
+            offers=offers,
             seller_offer_count=seller_offer_count,
             formal_rule_result=universe_formal_result,
             seed_rule_result=universe_seed_result,
@@ -2421,10 +2421,10 @@ def process_sku(
 ) -> dict[str, Any]:
     try:
         if not skip_db:
-            upsert_seed_sku(sku, 来源=source)
+            upsert_seed_sku(sku, source=source)
     except Exception as exc:
         vlog("seed_sku upsert failed:", f"sku={sku}", f"error={exc}", prefix="sku")
-    vlog("process_sku start:", f"sku={sku}", f"来源={source}", f"batch_only={batch_only_mode}", f"skip_db={skip_db}", prefix="sku")
+    vlog("process_sku start:", f"sku={sku}", f"source={source}", f"batch_only={batch_only_mode}", f"skip_db={skip_db}", prefix="sku")
     if prefetched_maozi is not None:
         response, maozi_source = prefetched_maozi
     else:
@@ -2460,7 +2460,7 @@ def process_sku(
             raise RuntimeError(
                 f"failed to fetch maozi sku3 for sku {sku}; {summarize_exception(exc)}"
             ) from exc
-    vlog("sku maozi source:", f"sku={sku}", f"数据来源={maozi_source}", prefix="sku")
+    vlog("sku maozi source:", f"sku={sku}", f"maozi_source={maozi_source}", prefix="sku")
     product_snapshot = product_snapshot_override if product_snapshot_override is not None else load_product_snapshot(sku, browser)
     plugin_card: dict[str, Any] = {
         "metric_overrides": {},
@@ -2556,7 +2556,7 @@ def process_sku(
                             seller_offer_count = len(offers)
                             preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
                             non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
-                            vlog("sku batch-only fast candidate offers fetched:", f"sku={sku}", f"跟卖={seller_offer_count}", prefix="sku")
+                            vlog("sku batch-only fast candidate offers fetched:", f"sku={sku}", f"offers={seller_offer_count}", prefix="sku")
                         except Exception as exc:
                             offers = None
                             offer_fetch_error = exc
@@ -2586,7 +2586,7 @@ def process_sku(
                     offers = load_seller_offers(sku, browser)
                     seller_offer_count = len(offers)
                     preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
-                    vlog("sku offers fetched:", f"sku={sku}", f"跟卖={seller_offer_count}", prefix="sku")
+                    vlog("sku offers fetched:", f"sku={sku}", f"offers={seller_offer_count}", prefix="sku")
                 except Exception as exc:
                     offers = None
                     offer_fetch_error = exc
@@ -2659,7 +2659,7 @@ def process_sku(
             product_data=product_snapshot,
             metric=metric_preview,
             plugin_card=plugin_card,
-            跟卖=offers,
+            offers=offers,
             seller_offer_count=seller_offer_count,
             formal_rule_result=None if ((seller_offer_count is None and not non_offer_reasons) or defer_pending_refresh) else preview_rule,
         )
@@ -2731,7 +2731,7 @@ def process_sku(
             product_data=product_snapshot,
             metric=metric_preview,
             plugin_card=plugin_card,
-            跟卖=offers,
+            offers=offers,
             seller_offer_count=seller_offer_count,
             formal_rule_result=preview_rule,
         )
