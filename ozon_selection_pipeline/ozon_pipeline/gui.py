@@ -371,6 +371,8 @@ class App:
                        tooltip="过滤特定来源的种子。可选：top_list, manual")
         self._add_param(lf_seed, 1, 1, "强制重试淘汰项", "retry_rejected_now", False, "bool", 
                        tooltip="勾选后将重试状态为rejected/done的任务")
+        self._add_param(lf_seed, 2, 0, "快速模式(跳过SKU3重试)", "fast_mode", False, "bool",
+                       tooltip="SKU3获取失败直接跳过，不重试/不打开详情页。适用于所有采集模式")
 
         # 榜单组 — 按毛子ERP实际页面字段顺序排列
         lf_top = tk.LabelFrame(tab_adv, text="榜单采集专属配置（留空=不过滤，顺序与网页一致）", bg="#ffffff", padx=8, pady=8)
@@ -1122,6 +1124,9 @@ class App:
             ("chunk_delay_ms", "TOP_LIST_SKU3_BATCH_CHUNK_DELAY_MS", "top_list_sku3_batch_chunk_delay_ms"),
             ("seller_page_timeout_seconds", "SELLER_PAGE_TIMEOUT_SECONDS", "seller_page_timeout_seconds"),
         ]
+        bool_overrides = [
+            ("fast_mode", "FAST_MODE", "fast_mode"),
+        ]
         applied = []
         for key, env_name, setting_name in overrides:
             if key not in params:
@@ -1130,6 +1135,14 @@ class App:
             os.environ[env_name] = str(value)
             object.__setattr__(settings, setting_name, value)
             applied.append(f"{key}={value}")
+        for key, env_name, setting_name in bool_overrides:
+            if key not in params:
+                continue
+            value = bool(params[key])
+            os.environ[env_name] = "1" if value else "0"
+            object.__setattr__(settings, setting_name, value)
+            if value:
+                applied.append(f"{key}=True")
         if applied:
             print("GUI运行时配置已应用: " + ", ".join(applied))
 

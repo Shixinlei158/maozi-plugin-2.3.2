@@ -785,7 +785,7 @@ def run_seller_network(
                     "raw": {"seller_home": item},
                 }
                 if prefetched is None:
-                    if settings.seller_fast_mode:
+                    if settings.seller_fast_mode or settings.fast_mode:
                         return {
                             "sku": sku,
                             "sku_result": deferred_seller_sku_result(
@@ -2469,7 +2469,7 @@ def prefetch_top_list_maozi_batch(
     for index in range(0, len(skus), resolved_batch_size):
         chunk = skus[index : index + resolved_batch_size]
 
-        max_retries = 3
+        max_retries = 0 if settings.fast_mode else 3
         retry_delay_seconds = 0.5
         raw = {}
         for retry_idx in range(max_retries + 1):
@@ -2913,6 +2913,7 @@ def process_sku(
     }
     should_try_plugin_rescue = (
         not batch_only_mode
+        and not settings.fast_mode
         and
         bool(non_offer_reasons)
         and all(reason in plugin_rescuable_reasons for reason in non_offer_reasons)
@@ -2956,7 +2957,7 @@ def process_sku(
     if seller_offer_count is None:
         if not non_offer_reasons:
             if batch_only_mode:
-                if settings.seller_fast_mode:
+                if settings.seller_fast_mode or settings.fast_mode:
                     # 先评估其他规则是否已通过（忽略跟卖人数）
                     preview_without_offers = evaluate_selection_rule(metric_preview, product_snapshot, seller_offer_count)
                     other_reasons = [r for r in preview_without_offers.reasons if r != "跟卖人数缺失"]

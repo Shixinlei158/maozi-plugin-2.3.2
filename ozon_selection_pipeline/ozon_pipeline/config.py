@@ -184,6 +184,7 @@ class Settings:
     }
     seller_home_sku_batch_size: int = int(os.getenv("SELLER_HOME_SKU_BATCH_SIZE", "1000"))
     seller_write_minimal: bool = os.getenv("SELLER_WRITE_MINIMAL", "true").lower() in {"1", "true", "yes"}
+    fast_mode: bool = os.getenv("FAST_MODE", "false").lower() in {"1", "true", "yes"}
     collection_idle_sleep_seconds: int = int(os.getenv("COLLECTION_IDLE_SLEEP_SECONDS", "300"))
     collection_cycle_sleep_seconds: int = int(os.getenv("COLLECTION_CYCLE_SLEEP_SECONDS", "60"))
     collection_error_sleep_seconds: int = int(os.getenv("COLLECTION_ERROR_SLEEP_SECONDS", "300"))
