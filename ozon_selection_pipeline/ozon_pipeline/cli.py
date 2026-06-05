@@ -23,7 +23,6 @@ from .repository import (
     bulk_mark_seed_pool_processed,
     finish_top_list_run,
     bulk_upsert_seller_home_skus,
-    bulk_upsert_seed_skus,
     bulk_upsert_sku_results,
     cleanup_processed_seller_home_skus,
     upsert_seller_home_sku,
@@ -634,8 +633,6 @@ def run_seller_network(
             prepare_stage_start = time.perf_counter()
             try:
                 prepared_items = bulk_upsert_seller_home_skus(url, selected_items)
-                if not settings.seller_fast_mode or settings.seller_seed_skus_from_home:
-                    bulk_upsert_seed_skus([sku for sku, _ in prepared_items], source=f"seller_home:{url}")
                 home_rows_saved = len(prepared_items)
                 prepare_elapsed = time.perf_counter() - prepare_stage_start
                 print(

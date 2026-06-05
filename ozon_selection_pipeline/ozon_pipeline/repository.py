@@ -723,12 +723,9 @@ def bulk_upsert_sku_results(
         )
 
     if seed_status_rows and source.startswith("seller_home:"):
-        for row in seed_status_rows:
-            mark_seed_status(
-                row["sku"],
-                status=row["status"],
-                reason=row["reason"][:512] if row.get("reason") else None,
-            )
+        qualified_rows = [r for r in seed_status_rows if r["status"] == "qualified"]
+        if qualified_rows:
+            bulk_mark_seed_statuses(qualified_rows, source=source)
     
     if universe_entries and not (source.startswith("seller_home:") and settings.seller_write_minimal):
         bulk_upsert_sku_universe_full(universe_entries, source=source)
@@ -1034,6 +1031,38 @@ def mark_seed_status(sku: str, *, status: str, reason: str | None = None, score:
             "reason": (reason or "")[:512] or None,
             "score": score,
         },
+    )
+
+
+def bulk_mark_seed_statuses(rows: list[dict[str, Any]], *, source: str) -> int:
+    if not rows:
+        return 0
+    now = datetime.now()
+    params = [
+        {
+            "sku": str(row["sku"]),
+            "source": source,
+            "status": row["status"],
+            "reason": (row.get("reason") or "")[:512] or None,
+            "score": row.get("score"),
+            "last_checked_at": now,
+        }
+        for row in rows
+    ]
+    return db.execute_insert_many(
+        """
+        INSERT INTO seed_skus (sku, source, status, reason, score, last_checked_at, updated_at)
+        VALUES (%(sku)s, %(source)s, %(status)s, %(reason)s, %(score)s, %(last_checked_at)s, CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE
+          source=VALUES(source),
+          status=VALUES(status),
+          reason=VALUES(reason),
+          score=VALUES(score),
+          last_checked_at=VALUES(last_checked_at),
+          updated_at=CURRENT_TIMESTAMP
+        """,
+        params,
+        batch_size=200,
     )
 
 
@@ -1944,26 +1973,6 @@ def bulk_upsert_seller_home_skus(seller_home_url: str, items: list[dict[str, Any
         rows,
         batch_size=settings.seller_home_sku_batch_size,
     )
-    if settings.seller_fast_mode:
-        return [(row["sku"], row["product_data"]["raw"]["seller_home"]) for row in rows]
-    db.execute_insert_many(
-        """
-        INSERT INTO sku_discovery_sources
-          (sku, source_type, source_key, source_url, source_name, related_sku, source_rank, raw_json, last_seen_at)
-        VALUES
-          (%(sku)s, %(source_type)s, %(source_key)s, %(source_url)s, %(source_name)s, %(related_sku)s, %(source_rank)s, %(raw_json)s, CURRENT_TIMESTAMP)
-        ON DUPLICATE KEY UPDATE
-          source_url=COALESCE(VALUES(source_url), source_url),
-          source_name=COALESCE(VALUES(source_name), source_name),
-          related_sku=COALESCE(VALUES(related_sku), related_sku),
-          source_rank=COALESCE(VALUES(source_rank), source_rank),
-          raw_json=COALESCE(VALUES(raw_json), raw_json),
-          last_seen_at=CURRENT_TIMESTAMP
-        """,
-        rows,
-        batch_size=200,
-    )
-    bulk_upsert_sku_universe_product_snapshots(rows)
     return [(row["sku"], row["product_data"]["raw"]["seller_home"]) for row in rows]
 
 
