@@ -619,66 +619,24 @@ def run_seller_network(
                 f"{crawl_elapsed:.1f}s",
             )
 
-        seller_offer_urls: dict[str, dict[str, Any]] = {}
-        seller_skus = 0
-        seller_qualified = 0
-        seller_rejected = 0
-        seller_deferred = 0
-        seller_deferred_fetch_failed = 0
-        seller_deferred_data_incomplete = 0
-        seller_skipped = 0
-        seller_offer_rows = 0
-        selected_items = items[: sku_limit or None]
-        prepared_items: list[tuple[str, dict[str, Any]]] = []
-        home_rows_saved = 0
-        prepare_stage_start = time.perf_counter()
-        try:
-            prepared_items = bulk_upsert_seller_home_skus(url, selected_items)
-            if not settings.seller_fast_mode or settings.seller_seed_skus_from_home:
-                bulk_upsert_seed_skus([sku for sku, _ in prepared_items], source=f"seller_home:{url}")
-            home_rows_saved = len(prepared_items)
-            prepare_elapsed = time.perf_counter() - prepare_stage_start
-            print(
-                "seller home skus prepared:",
-                f"seller={url}",
-                f"raw_items={len(items)}",
-                f"selected={len(selected_items)}",
-                f"saved={home_rows_saved}",
-                "mode=batch",
-                f"elapsed={prepare_elapsed:.1f}s",
-            )
-        except Exception as exc:
-            vlog("seller-home bulk prepare failed, fallback to row mode:", f"seller={url}", f"error={exc}", prefix="seller")
-            print(
-                "WARN: bulk_upsert_seller_home_skus failed, falling back to row-by-row:",
-                f"seller={url}",
-                f"error={summarize_exception(exc)}",
-            )
-            row_start = time.perf_counter()
-            for item in selected_items:
-                try:
-                    sku = upsert_seller_home_sku(url, item)
-                except Exception as row_exc:
-                    vlog("seller-home sku upsert failed:", f"seller={url}", f"error={row_exc}", prefix="seller")
-                    print("DEBUG: upsert_seller_home_sku failed:", row_exc)
-                    continue
-                if not sku:
-                    print("DEBUG: upsert_seller_home_sku returned empty sku for item:", item.get("title"))
-                    continue
-                try:
-                    upsert_seed_sku(sku, source=f"seller_home:{url}")
-                except Exception as seed_exc:
-                    vlog("seed_sku upsert failed:", f"sku={sku}", f"error={seed_exc}", prefix="seller")
-                    print("DEBUG: seed_sku upsert failed:", seed_exc)
-                prepared_items.append((sku, item))
-                home_rows_saved += 1
-                if home_rows_saved % 100 == 0:
-                    print(
-                        "  upsert progress:",
-                        f"done={home_rows_saved}/{len(selected_items)}",
-                        f"seller={url}",
-                    )
-        if not prepared_items:
+            seller_offer_urls: dict[str, dict[str, Any]] = {}
+            seller_skus = 0
+            seller_qualified = 0
+            seller_rejected = 0
+            seller_deferred = 0
+            seller_deferred_fetch_failed = 0
+            seller_deferred_data_incomplete = 0
+            seller_skipped = 0
+            seller_offer_rows = 0
+            selected_items = items[: sku_limit or None]
+            prepared_items: list[tuple[str, dict[str, Any]]] = []
+            home_rows_saved = 0
+            prepare_stage_start = time.perf_counter()
+            try:
+                prepared_items = bulk_upsert_seller_home_skus(url, selected_items)
+                if not settings.seller_fast_mode or settings.seller_seed_skus_from_home:
+                    bulk_upsert_seed_skus([sku for sku, _ in prepared_items], source=f"seller_home:{url}")
+                home_rows_saved = len(prepared_items)
                 prepare_elapsed = time.perf_counter() - prepare_stage_start
                 print(
                     "seller home skus prepared:",
@@ -686,268 +644,333 @@ def run_seller_network(
                     f"raw_items={len(items)}",
                     f"selected={len(selected_items)}",
                     f"saved={home_rows_saved}",
-                    "mode=fallback",
+                    "mode=batch",
                     f"elapsed={prepare_elapsed:.1f}s",
                 )
-
-        seller_prefetched_maozi: dict[str, tuple[dict[str, Any], str]] = {}
-        seller_batch_prefetch_failed = False
-        if prepared_items and browser.cdp_url:
-            try:
-                prefetch_start = time.perf_counter()
-                seller_prefetched_maozi = prefetch_top_list_maozi_batch(
-                    [sku for sku, _ in prepared_items],
-                    maozi=maozi,
-                    browser=browser,
-                )
-                prefetch_elapsed = time.perf_counter() - prefetch_start
-                print(
-                    "prefetch SKU3 batch:",
-                    f"seller={url}",
-                    f"requested={len(prepared_items)}",
-                    f"fetched={len(seller_prefetched_maozi)}",
-                    f"elapsed={prefetch_elapsed:.1f}s",
-                )
-                vlog(
-                    "seller-home batch sku3 prefetched:",
-                    f"seller={url}",
-                    f"requested={len(prepared_items)}",
-                    f"succeeded={len(seller_prefetched_maozi)}",
-                    prefix="seller",
-                )
-            except ManualInterventionRequired:
-                raise
             except Exception as exc:
-                seller_batch_prefetch_failed = True
-                vlog("seller-home batch sku3 prefetch failed:", f"seller={url}", exc, prefix="seller")
+                vlog("seller-home bulk prepare failed, fallback to row mode:", f"seller={url}", f"error={exc}", prefix="seller")
                 print(
-                    "seller-home batch sku3 prefetch failed:",
+                    "WARN: bulk_upsert_seller_home_skus failed, falling back to row-by-row:",
                     f"seller={url}",
                     f"error={summarize_exception(exc)}",
                 )
+                row_start = time.perf_counter()
+                for item in selected_items:
+                    try:
+                        sku = upsert_seller_home_sku(url, item)
+                    except Exception as row_exc:
+                        vlog("seller-home sku upsert failed:", f"seller={url}", f"error={row_exc}", prefix="seller")
+                        print("DEBUG: upsert_seller_home_sku failed:", row_exc)
+                        continue
+                    if not sku:
+                        print("DEBUG: upsert_seller_home_sku returned empty sku for item:", item.get("title"))
+                        continue
+                    try:
+                        upsert_seed_sku(sku, source=f"seller_home:{url}")
+                    except Exception as seed_exc:
+                        vlog("seed_sku upsert failed:", f"sku={sku}", f"error={seed_exc}", prefix="seller")
+                        print("DEBUG: seed_sku upsert failed:", seed_exc)
+                    prepared_items.append((sku, item))
+                    home_rows_saved += 1
+                    if home_rows_saved % 100 == 0:
+                        print(
+                            "  upsert progress:",
+                            f"done={home_rows_saved}/{len(selected_items)}",
+                            f"seller={url}",
+                        )
+            if not prepared_items:
+                    prepare_elapsed = time.perf_counter() - prepare_stage_start
+                    print(
+                        "seller home skus prepared:",
+                        f"seller={url}",
+                        f"raw_items={len(items)}",
+                        f"selected={len(selected_items)}",
+                        f"saved={home_rows_saved}",
+                        "mode=fallback",
+                        f"elapsed={prepare_elapsed:.1f}s",
+                    )
 
-        if not browser.cdp_url:
-            print(
-                "skip seller:",
-                url,
-                "| reason= batch sku3 requires CDP browser",
-                "| requested=",
-                len(prepared_items),
-            )
-            mark_seller_collected(key, qualified_count=0)
-            processed_sellers += 1
-            continue
-        if seller_batch_prefetch_failed and not seller_prefetched_maozi:
-            print(
-                "WARN: seller batch SKU3 prefetch failed, falling back to individual SKU processing:",
-                f"seller={url}",
-                f"| requested={len(prepared_items)}",
-            )
+            seller_prefetched_maozi: dict[str, tuple[dict[str, Any], str]] = {}
+            seller_batch_prefetch_failed = False
+            if prepared_items and browser.cdp_url:
+                try:
+                    prefetch_start = time.perf_counter()
+                    seller_prefetched_maozi = prefetch_top_list_maozi_batch(
+                        [sku for sku, _ in prepared_items],
+                        maozi=maozi,
+                        browser=browser,
+                    )
+                    prefetch_elapsed = time.perf_counter() - prefetch_start
+                    print(
+                        "prefetch SKU3 batch:",
+                        f"seller={url}",
+                        f"requested={len(prepared_items)}",
+                        f"fetched={len(seller_prefetched_maozi)}",
+                        f"elapsed={prefetch_elapsed:.1f}s",
+                    )
+                    vlog(
+                        "seller-home batch sku3 prefetched:",
+                        f"seller={url}",
+                        f"requested={len(prepared_items)}",
+                        f"succeeded={len(seller_prefetched_maozi)}",
+                        prefix="seller",
+                    )
+                except ManualInterventionRequired:
+                    raise
+                except Exception as exc:
+                    seller_batch_prefetch_failed = True
+                    vlog("seller-home batch sku3 prefetch failed:", f"seller={url}", exc, prefix="seller")
+                    print(
+                        "seller-home batch sku3 prefetch failed:",
+                        f"seller={url}",
+                        f"error={summarize_exception(exc)}",
+                    )
 
-        if not prepared_items:
-            vlog("seller-home no items found/saved, skipping completion", f"seller={url}", prefix="seller")
-            mark_seller_collected(key, qualified_count=0)
-            processed_sellers += 1
-            continue
+            if not browser.cdp_url:
+                print(
+                    "skip seller:",
+                    url,
+                    "| reason= batch sku3 requires CDP browser",
+                    "| requested=",
+                    len(prepared_items),
+                )
+                mark_seller_collected(key, qualified_count=0)
+                processed_sellers += 1
+                continue
+            if seller_batch_prefetch_failed and not seller_prefetched_maozi:
+                print(
+                    "WARN: seller batch SKU3 prefetch failed, falling back to individual SKU processing:",
+                    f"seller={url}",
+                    f"| requested={len(prepared_items)}",
+                )
 
-        def deferred_seller_sku_result(sku: str, product_snapshot: dict[str, Any], reason: str) -> dict[str, Any]:
-            return {
-                "sku": sku,
-                "qualified": False,
-                "strict_qualified": False,
-                "transient_failed": True,
-                "deferred_reason": "fetch_failed",
-                "batch_skipped": False,
-                "rule_reason": reason,
-                "status_update_sales": None,
-                "status_update_variant": None,
-                "seller_offer_count": None,
-                "maozi_source": "seller_fast_deferred",
-                "metric": None,
-                "product_snapshot": product_snapshot,
-                "selection_result": None,
-                "plugin_card": {
-                    "metric_overrides": {},
+            if not prepared_items:
+                vlog("seller-home no items found/saved, skipping completion", f"seller={url}", prefix="seller")
+                mark_seller_collected(key, qualified_count=0)
+                processed_sellers += 1
+                continue
+
+            def deferred_seller_sku_result(sku: str, product_snapshot: dict[str, Any], reason: str) -> dict[str, Any]:
+                return {
+                    "sku": sku,
+                    "qualified": False,
+                    "strict_qualified": False,
+                    "transient_failed": True,
+                    "deferred_reason": "fetch_failed",
+                    "batch_skipped": False,
+                    "rule_reason": reason,
+                    "status_update_sales": None,
+                    "status_update_variant": None,
                     "seller_offer_count": None,
-                    "line_map": None,
-                    "card_lines": None,
-                },
-                "metric_raw": None,
-                "offers": [],
-            }
+                    "maozi_source": "seller_fast_deferred",
+                    "metric": None,
+                    "product_snapshot": product_snapshot,
+                    "selection_result": None,
+                    "plugin_card": {
+                        "metric_overrides": {},
+                        "seller_offer_count": None,
+                        "line_map": None,
+                        "card_lines": None,
+                    },
+                    "metric_raw": None,
+                    "offers": [],
+                }
 
-        def process_seller_home_item(entry: tuple[str, dict[str, Any]]) -> dict[str, Any] | None:
-            sku, item = entry
-            prefetched = seller_prefetched_maozi.get(sku)
-            product_snapshot_override = {
-                "product_url": item.get("href") or item.get("product_url"),
-                "title": item.get("title"),
-                "price": item.get("price_amount"),
-                "currency": item.get("currency"),
-                "main_image_url": item.get("image_url") or item.get("main_image_url"),
-                "raw": {"seller_home": item},
-            }
-            if prefetched is None:
-                if settings.seller_fast_mode:
+            def process_seller_home_item(entry: tuple[str, dict[str, Any]]) -> dict[str, Any] | None:
+                sku, item = entry
+                prefetched = seller_prefetched_maozi.get(sku)
+                product_snapshot_override = {
+                    "product_url": item.get("href") or item.get("product_url"),
+                    "title": item.get("title"),
+                    "price": item.get("price_amount"),
+                    "currency": item.get("currency"),
+                    "main_image_url": item.get("image_url") or item.get("main_image_url"),
+                    "raw": {"seller_home": item},
+                }
+                if prefetched is None:
+                    if settings.seller_fast_mode:
+                        return {
+                            "sku": sku,
+                            "sku_result": deferred_seller_sku_result(
+                                sku,
+                                product_snapshot_override,
+                                "待重试: 效率优先模式下 SKU3 批量未命中，跳过单 SKU 补抓",
+                            ),
+                        }
+                    try:
+                        sku_result = process_sku(
+                            sku,
+                            maozi,
+                            browser,
+                            source=f"seller_home:{url}",
+                            product_snapshot_override=product_snapshot_override,
+                            batch_only_mode=True,
+                            skip_db=True,
+                        )
+                    except ManualInterventionRequired:
+                        raise
+                    except Exception as exc:
+                        return {
+                            "sku": sku,
+                            "sku_result": deferred_seller_sku_result(
+                                sku,
+                                product_snapshot_override,
+                                build_retry_reason("seller_home_sku", exc),
+                            ),
+                        }
+                    return {"sku": sku, "sku_result": sku_result}
+                try:
+                    sku_result = process_sku(
+                        sku,
+                        maozi,
+                        browser,
+                        source=f"seller_home:{url}",
+                        product_snapshot_override=product_snapshot_override,
+                        prefetched_maozi=prefetched,
+                        batch_only_mode=True,
+                        skip_db=True,
+                    )
+                except ManualInterventionRequired:
+                    raise
+                except Exception as exc:
                     return {
                         "sku": sku,
                         "sku_result": deferred_seller_sku_result(
                             sku,
                             product_snapshot_override,
-                            "待重试: 效率优先模式下 SKU3 批量未命中，跳过单 SKU 补抓",
+                            build_retry_reason("seller_home_sku", exc),
                         ),
                     }
-                # 批量预取未覆盖此 SKU，降级为逐 SKU 单独请求(仍保持 batch_only 以限制浏览器调用)
-                sku_result = process_sku(
-                    sku,
-                    maozi,
-                    browser,
-                    source=f"seller_home:{url}",
-                    product_snapshot_override=product_snapshot_override,
-                    batch_only_mode=True,
-                    skip_db=True,
-                )
                 return {"sku": sku, "sku_result": sku_result}
-            sku_result = process_sku(
-                sku,
-                maozi,
-                browser,
-                source=f"seller_home:{url}",
-                product_snapshot_override=product_snapshot_override,
-                prefetched_maozi=prefetched,
-                batch_only_mode=True,
-                skip_db=True,
-            )
-            return {"sku": sku, "sku_result": sku_result}
 
-        seller_results: list[dict[str, Any]] = []
+            seller_results: list[dict[str, Any]] = []
 
-        def consume_seller_home_result(item_result: dict[str, Any] | None) -> None:
-            nonlocal seller_skus, total_skus, seller_qualified, qualified_skus
-            nonlocal seller_rejected, rejected_skus, seller_deferred, deferred_skus, seller_skipped, seller_offer_rows, stored_offer_rows
-            nonlocal seller_deferred_fetch_failed, seller_deferred_data_incomplete
-            if not item_result:
-                return
+            def consume_seller_home_result(item_result: dict[str, Any] | None) -> None:
+                nonlocal seller_skus, total_skus, seller_qualified, qualified_skus
+                nonlocal seller_rejected, rejected_skus, seller_deferred, deferred_skus, seller_skipped, seller_offer_rows, stored_offer_rows
+                nonlocal seller_deferred_fetch_failed, seller_deferred_data_incomplete
+                if not item_result:
+                    return
 
-            seller_results.append(item_result)
+                seller_results.append(item_result)
 
-            sku = item_result["sku"]
-            sku_result = item_result["sku_result"]
-            seller_skus += 1
-            total_skus += 1
-            if seller_skus % 100 == 0:
-                print(
-                    "  progress:",
-                    f"sku={sku}",
-                    f"done={seller_skus}/{len(prepared_items)}",
-                    f"q={seller_qualified}",
-                )
-            if sku_result.get("batch_skipped"):
-                seller_skipped += 1
-                return
-            if sku_result.get("transient_failed"):
-                seller_deferred += 1
-                deferred_skus += 1
-                deferred_reason = sku_result.get("deferred_reason", "")
-                if deferred_reason == "fetch_failed":
-                    seller_deferred_fetch_failed += 1
+                sku = item_result["sku"]
+                sku_result = item_result["sku_result"]
+                seller_skus += 1
+                total_skus += 1
+                if seller_skus % 100 == 0:
+                    print(
+                        "  progress:",
+                        f"sku={sku}",
+                        f"done={seller_skus}/{len(prepared_items)}",
+                        f"q={seller_qualified}",
+                    )
+                if sku_result.get("batch_skipped"):
+                    seller_skipped += 1
+                    return
+                if sku_result.get("transient_failed"):
+                    seller_deferred += 1
+                    deferred_skus += 1
+                    deferred_reason = sku_result.get("deferred_reason", "")
+                    if deferred_reason == "fetch_failed":
+                        seller_deferred_fetch_failed += 1
+                    else:
+                        seller_deferred_data_incomplete += 1
+                    return
+                if sku_result["qualified"]:
+                    seller_qualified += 1
+                    qualified_skus += 1
+                    offers = sku_result.get("offers") or []
+                    stored_seller_offers = 0
+                    if offers:
+                        bulk_upsert_seller_offers(sku, offers)
+                        stored_seller_offers = len(offers)
+                        for offer in offers:
+                            home_url = (offer.get("seller_home_url") or "").strip()
+                            if not home_url:
+                                continue
+                            seller_offer_urls[home_url.rstrip("/")] = {
+                                "url": home_url,
+                                "name": offer.get("name"),
+                                "depth": depth + 1,
+                            }
+                    seller_offer_rows += stored_seller_offers
+                    stored_offer_rows += stored_seller_offers
                 else:
-                    seller_deferred_data_incomplete += 1
-                return
-            if sku_result["qualified"]:
-                seller_qualified += 1
-                qualified_skus += 1
-                offers = sku_result.get("offers") or []
-                stored_seller_offers = 0
-                if offers:
-                    bulk_upsert_seller_offers(sku, offers)
-                    stored_seller_offers = len(offers)
-                    for offer in offers:
-                        home_url = (offer.get("seller_home_url") or "").strip()
-                        if not home_url:
-                            continue
-                        seller_offer_urls[home_url.rstrip("/")] = {
-                            "url": home_url,
-                            "name": offer.get("name"),
-                            "depth": depth + 1,
-                        }
-                seller_offer_rows += stored_seller_offers
-                stored_offer_rows += stored_seller_offers
+                    seller_rejected += 1
+                    rejected_skus += 1
+
+            if seller_sku_workers <= 1 or len(prepared_items) <= 1:
+                rule_start = time.perf_counter()
+                for entry in prepared_items:
+                    consume_seller_home_result(process_seller_home_item(entry))
+                rule_elapsed = time.perf_counter() - rule_start
             else:
-                seller_rejected += 1
-                rejected_skus += 1
-
-        if seller_sku_workers <= 1 or len(prepared_items) <= 1:
-            rule_start = time.perf_counter()
-            for entry in prepared_items:
-                consume_seller_home_result(process_seller_home_item(entry))
-            rule_elapsed = time.perf_counter() - rule_start
-        else:
-            # 批量模式下不涉及浏览器竞争，增加 worker 数量以提高 DB 吞吐
-            effective_workers = min(seller_sku_workers * 3, 16)
-            rule_start = time.perf_counter()
-            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-                futures = [executor.submit(process_seller_home_item, entry) for entry in prepared_items]
-                for future in as_completed(futures):
-                    consume_seller_home_result(future.result())
-            rule_elapsed = time.perf_counter() - rule_start
-        print(
-            "phase: rule evaluation done:",
-            f"seller={url}",
-            f"skus={seller_skus}",
-            f"workers={effective_workers if seller_sku_workers > 1 and len(prepared_items) > 1 else 1}",
-            f"elapsed={rule_elapsed:.1f}s",
-        )
-
-        # 卖家所有 SKU 处理完后，统一执行批量写库
-        if seller_results:
-            db_write_start = time.perf_counter()
+                # 批量模式下不涉及浏览器竞争，增加 worker 数量以提高 DB 吞吐
+                effective_workers = min(seller_sku_workers * 3, 16)
+                rule_start = time.perf_counter()
+                with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+                    futures = [executor.submit(process_seller_home_item, entry) for entry in prepared_items]
+                    for future in as_completed(futures):
+                        consume_seller_home_result(future.result())
+                rule_elapsed = time.perf_counter() - rule_start
             print(
-                "phase: bulk write start:",
+                "phase: rule evaluation done:",
                 f"seller={url}",
-                f"rows={len(seller_results)}",
+                f"skus={seller_skus}",
+                f"workers={effective_workers if seller_sku_workers > 1 and len(prepared_items) > 1 else 1}",
+                f"elapsed={rule_elapsed:.1f}s",
             )
-            write_summary = bulk_upsert_sku_results(seller_results, source=f"seller_home:{url}")
-            db_write_elapsed = time.perf_counter() - db_write_start
+
+            # 卖家所有 SKU 处理完后，统一执行批量写库
+            if seller_results:
+                db_write_start = time.perf_counter()
+                print(
+                    "phase: bulk write start:",
+                    f"seller={url}",
+                    f"rows={len(seller_results)}",
+                )
+                write_summary = bulk_upsert_sku_results(seller_results, source=f"seller_home:{url}")
+                db_write_elapsed = time.perf_counter() - db_write_start
+                print(
+                    "phase: bulk write results:",
+                    f"seller={url}",
+                    f"total={write_summary['total']}",
+                    f"metrics={write_summary['metrics']}",
+                    f"products={write_summary['products']}",
+                    f"universe={write_summary['universe']}",
+                    f"elapsed={db_write_elapsed:.1f}s",
+                )
+                cleanup_deleted = cleanup_processed_seller_home_skus(url)
+                if cleanup_deleted:
+                    vlog("seller home staging cleaned:", f"seller={url}", f"deleted={cleanup_deleted}", prefix="seller")
+
+            mark_seller_collected(key, qualified_count=seller_qualified)
+            processed_sellers += 1
+            consecutive_failures = 0  # 成功处理，重置连续失败计数
+            total_elapsed = time.perf_counter() - crawl_start
             print(
-                "phase: bulk write results:",
-                f"seller={url}",
-                f"total={write_summary['total']}",
-                f"metrics={write_summary['metrics']}",
-                f"products={write_summary['products']}",
-                f"universe={write_summary['universe']}",
-                f"elapsed={db_write_elapsed:.1f}s",
+                "seller summary:",
+                f"skus={seller_skus}",
+                f"qualified={seller_qualified}",
+                f"rejected={seller_rejected}",
+                f"deferred={seller_deferred}(fetch_fail={seller_deferred_fetch_failed}|incomplete={seller_deferred_data_incomplete})",
+                f"skipped={seller_skipped}",
+                f"offers={seller_offer_rows}",
+                f"total={total_elapsed:.1f}s",
             )
-            cleanup_deleted = cleanup_processed_seller_home_skus(url)
-            if cleanup_deleted:
-                vlog("seller home staging cleaned:", f"seller={url}", f"deleted={cleanup_deleted}", prefix="seller")
 
-        mark_seller_collected(key, qualified_count=seller_qualified)
-        processed_sellers += 1
-        consecutive_failures = 0  # 成功处理，重置连续失败计数
-        total_elapsed = time.perf_counter() - crawl_start
-        print(
-            "seller summary:",
-            f"skus={seller_skus}",
-            f"qualified={seller_qualified}",
-            f"rejected={seller_rejected}",
-            f"deferred={seller_deferred}(fetch_fail={seller_deferred_fetch_failed}|incomplete={seller_deferred_data_incomplete})",
-            f"skipped={seller_skipped}",
-            f"offers={seller_offer_rows}",
-            f"total={total_elapsed:.1f}s",
-        )
+            deferred_fetch_failed += seller_deferred_fetch_failed
+            deferred_data_incomplete += seller_deferred_data_incomplete
 
-        deferred_fetch_failed += seller_deferred_fetch_failed
-        deferred_data_incomplete += seller_deferred_data_incomplete
-
-        if unlimited_depth or depth < max_depth:
-            for next_seller in seller_offer_urls.values():
-                next_url = next_seller["url"].rstrip("/")
-                if next_url in seen_urls:
-                    continue
-                queue.append(next_seller)
-                discovered_sellers += 1
-                upsert_seller_shop(next_url, name=next_seller.get("name"))
+            if unlimited_depth or depth < max_depth:
+                for next_seller in seller_offer_urls.values():
+                    next_url = next_seller["url"].rstrip("/")
+                    if next_url in seen_urls:
+                        continue
+                    queue.append(next_seller)
+                    discovered_sellers += 1
+                    upsert_seller_shop(next_url, name=next_seller.get("name"))
 
     return {
         "processed_sellers": processed_sellers,
@@ -1568,7 +1591,7 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
         except ManualInterventionRequired as exc:
             log_line("采集需要认证恢复:", exc, prefix="auth")
             log_line("尝试自动恢复登录...", prefix="auth")
-            
+
             recovery_success = False
             for recovery_attempt in range(3):
                 try:
@@ -1582,14 +1605,14 @@ def cmd_expand_seed_pool_network(args: argparse.Namespace) -> None:
                 except Exception as e:
                     log_line(f"恢复异常: {e}", prefix="auth")
                 time.sleep(3)
-            
+
             if recovery_success:
                 retry_failed_now = True
                 continue
-            
+
             consecutive_auth_failures += 1
             log_line(f"自动恢复失败 (连续失败={consecutive_auth_failures})", prefix="manual")
-            
+
             if consecutive_auth_failures >= 5:
                 extra_fields = [
                     {"label": "累计处理种子SKU", "value": str(stats.get("processed_skus", "N/A"))},
@@ -1775,7 +1798,7 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
         except ManualInterventionRequired as exc:
             log_line("采集需要认证恢复:", exc, prefix="auth")
             log_line("尝试自动恢复登录...", prefix="auth")
-            
+
             recovery_success = False
             for recovery_attempt in range(3):
                 try:
@@ -1788,14 +1811,14 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
                 except Exception as e:
                     log_line(f"恢复异常: {e}", prefix="auth")
                 time.sleep(3)
-            
+
             if recovery_success:
                 consecutive_auth_failures = 0
                 continue
             else:
                 consecutive_auth_failures += 1
                 log_line(f"自动恢复失败 (连续失败={consecutive_auth_failures}/{MAX_AUTH_FAILURES})", prefix="manual")
-                
+
                 if consecutive_auth_failures >= MAX_AUTH_FAILURES:
                     extra_fields = [
                         {"label": "累计处理卖家", "value": str(total_processed)},
@@ -1825,7 +1848,7 @@ def cmd_expand_seller_backlog(args: argparse.Namespace) -> None:
                         extra_fields=extra_fields,
                     )
                     break
-                
+
                 import sys
                 if not sys.stdin.isatty():
                     time.sleep(30)
@@ -2452,7 +2475,7 @@ def prefetch_top_list_maozi_batch(
     low_yield_streak = 0
     for index in range(0, len(skus), resolved_batch_size):
         chunk = skus[index : index + resolved_batch_size]
-        
+
         max_retries = 3
         retry_delay_seconds = 0.5
         raw = {}
@@ -2557,7 +2580,7 @@ def prefetch_top_list_maozi_batch(
                 f"remaining_deferred={remaining}",
             )
             break
-        
+
         next_chunk_start = index + resolved_batch_size
         if next_chunk_start < len(skus) and settings.top_list_sku3_batch_chunk_delay_ms > 0:
             delay_seconds = settings.top_list_sku3_batch_chunk_delay_ms / 1000.0

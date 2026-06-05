@@ -159,7 +159,7 @@ class Settings:
     seed_sku_workers: int = int(os.getenv("SEED_SKU_WORKERS", "4"))
     seller_sku_workers: int = int(os.getenv("SELLER_SKU_WORKERS", "6"))
     chrome_page_prune_threshold: int = int(os.getenv("CHROME_PAGE_PRUNE_THRESHOLD", "12"))
-    seller_page_timeout_seconds: int = int(os.getenv("SELLER_PAGE_TIMEOUT_SECONDS", "300"))
+    seller_page_timeout_seconds: int = int(os.getenv("SELLER_PAGE_TIMEOUT_SECONDS", "120"))
     seller_page_workers: int = int(os.getenv("SELLER_PAGE_WORKERS", "1"))
     seller_fast_mode: bool = os.getenv("SELLER_FAST_MODE", "true").lower() in {"1", "true", "yes"}
     seller_store_deferred_universe: bool = os.getenv("SELLER_STORE_DEFERRED_UNIVERSE", "false").lower() in {

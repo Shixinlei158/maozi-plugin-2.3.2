@@ -270,6 +270,7 @@ TOP_LIST_SKU3_BATCH_CONCURRENCY=10 # 批内并发数
 SEED_POOL_QUERY_LIMIT=30000        # 种子池一次查多少条
 SELLER_FAST_MODE=true              # 快速模式（缺数据跳过）
 SELLER_WRITE_MINIMAL=true          # 极简写入（只写合格品）
+SELLER_PAGE_TIMEOUT_SECONDS=120    # 异常卖家页最多等待秒数，超时跳过
 
 # 写入超时
 DB_READ_TIMEOUT=600
