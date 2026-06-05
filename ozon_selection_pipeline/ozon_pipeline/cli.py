@@ -2092,12 +2092,13 @@ def _multi_category_network_once(args: argparse.Namespace) -> None:
     )
     print(f"类目遍历: level={'all' if category_level=='all' else category_level}, 共 {len(categories)} 个类目, 每个 {pages_per_category} 页")
 
-    # 预加载父类目名称
-    parent_names: dict[int, str] = {}
+    # 预加载父类目ID映射 (level 2/3 需要父级和祖父级ID)
+    parent_id_map: dict[int, int] = {}
     if category_level in (2, 3, "all"):
-        all_parents = db.fetch_all("SELECT category_id, name_zh FROM ozon_categories WHERE level IN (1,2)")
+        all_parents = db.fetch_all("SELECT category_id, parent_id FROM ozon_categories WHERE level IN (1,2)")
         for p in all_parents:
-            parent_names[int(p["category_id"])] = p["name_zh"] or ""
+            if p["parent_id"] is not None:
+                parent_id_map[int(p["category_id"])] = int(p["parent_id"])
 
     t_start = time.perf_counter()
     total_pages = 0
@@ -2113,33 +2114,28 @@ def _multi_category_network_once(args: argparse.Namespace) -> None:
             cat_level = int(cat["level"])
             cat_parent = int(cat["parent_id"])
 
-            # 构建 category1/category2/category3
+            # 构建 category1/category2/category3 (API要求类目ID而非类目名)
             c1 = c2 = c3 = ""
             if cat_level == 1:
-                c1 = cat_name
+                c1 = str(cat_id)
             elif cat_level == 2:
-                c1 = parent_names.get(cat_parent, "")
-                c2 = cat_name
+                c1 = str(cat_parent)
+                c2 = str(cat_id)
             elif cat_level == 3:
-                # 需要祖父和父类目名
-                parent_row = db.fetch_one(
-                    "SELECT parent_id, name_zh FROM ozon_categories WHERE category_id=%s",
-                    (cat_parent,)
-                )
-                c2 = (parent_row["name_zh"] or "") if parent_row else ""
-                if parent_row:
-                    gp_id = int(parent_row["parent_id"])
-                    c1 = parent_names.get(gp_id, "")
-                c3 = cat_name
+                gp_id = parent_id_map.get(cat_parent)
+                if gp_id:
+                    c1 = str(gp_id)
+                c2 = str(cat_parent)
+                c3 = str(cat_id)
 
-            # 构建filters（API使用 cate1/cate2/cate3 作类目过滤，而非 category1）
+            # 构建filters（API使用 category1/2/3 + 类目ID作过滤）
             filters = default_top_list_filters(args)
             if c1:
-                filters["cate1"] = c1
+                filters["category1"] = c1
             if c2:
-                filters["cate2"] = c2
+                filters["category2"] = c2
             if c3:
-                filters["cate3"] = c3
+                filters["category3"] = c3
             # 重新过滤空值
             filters = {k: v for k, v in filters.items() if v != "" and v is not None
                       and not (isinstance(v, list) and all(x == "" or x is None for x in v))}
