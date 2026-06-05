@@ -5,7 +5,7 @@ import csv
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from threading import Lock, local
@@ -288,7 +288,10 @@ def default_top_list_filters(args: argparse.Namespace) -> dict[str, Any]:
         "weight_max": args.weight_max or "",
         "avg_delivery_days_min": args.avg_delivery_days_min or "",
         "avg_delivery_days_max": args.avg_delivery_days_max or "",
-        "create_date": [args.create_date_from, args.create_date_to],
+        "create_date": [
+            args.create_date_from or (date.today() - timedelta(days=settings.seed_create_days_max)).isoformat(),
+            args.create_date_to or date.today().isoformat(),
+        ],
         "sort_by": args.sort_by,
         "sort_order": args.sort_order,
     }
@@ -2396,8 +2399,8 @@ def add_top_list_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--weight-max", default="")
     parser.add_argument("--avg-delivery-days-min", default="")
     parser.add_argument("--avg-delivery-days-max", default="")
-    parser.add_argument("--create-date-from", default=settings.top_list_default_create_date_from)
-    parser.add_argument("--create-date-to", default=settings.top_list_default_create_date_to or date.today().isoformat())
+    parser.add_argument("--create-date-from", default="")
+    parser.add_argument("--create-date-to", default="")
     parser.add_argument("--sort-by", default="sold_sum")
     parser.add_argument("--sort-order", default="desc")
     parser.add_argument("--page-from", type=int, default=1)
