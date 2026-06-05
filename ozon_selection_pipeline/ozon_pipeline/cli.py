@@ -2132,14 +2132,14 @@ def _multi_category_network_once(args: argparse.Namespace) -> None:
                     c1 = parent_names.get(gp_id, "")
                 c3 = cat_name
 
-            # 构建filters
+            # 构建filters（API使用 cate1/cate2/cate3 作类目过滤，而非 category1）
             filters = default_top_list_filters(args)
             if c1:
-                filters["category1"] = c1
+                filters["cate1"] = c1
             if c2:
-                filters["category2"] = c2
+                filters["cate2"] = c2
             if c3:
-                filters["category3"] = c3
+                filters["cate3"] = c3
             # 重新过滤空值
             filters = {k: v for k, v in filters.items() if v != "" and v is not None
                       and not (isinstance(v, list) and all(x == "" or x is None for x in v))}
