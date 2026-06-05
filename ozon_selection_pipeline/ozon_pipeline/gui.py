@@ -319,9 +319,9 @@ class App:
         tab_conc = Frame(self._notebook, bg="#ffffff", padx=8, pady=8)
         tab_adv = Frame(self._notebook, bg="#ffffff", padx=8, pady=8)
 
-        self._notebook.add(tab_core, text="核心调度参数")
-        self._notebook.add(tab_conc, text="并发与频率控制")
-        self._notebook.add(tab_adv, text="模式专属配置")
+        self._notebook.add(tab_core, text="采集范围与循环")
+        self._notebook.add(tab_conc, text="效率与跳过策略")
+        self._notebook.add(tab_adv, text="榜单/种子/类目")
 
         # Tab 1: 核心调度
         self._add_param(tab_core, 0, 0, "每轮处理上限 (process_limit)", "process_limit", "0", "int", min_val=0, max_val=10000,
@@ -356,6 +356,8 @@ class App:
                        tooltip="同时爬取卖家主页的数量。增大可提速，但对内存和CDP管道有压力。建议：2-3")
         self._add_param(tab_conc, 3, 0, "种子SKU线程数 (seed_sku_workers)", "seed_sku_workers", str(settings.seed_sku_workers), "int", min_val=1, max_val=32,
                        tooltip="并行处理种子池SKU的本地线程数。示例：8")
+        self._add_param(tab_conc, 3, 1, "卖家页超时秒数", "seller_page_timeout_seconds", str(settings.seller_page_timeout_seconds), "int", min_val=10, max_val=3600,
+                       tooltip="单个异常卖家页最多等待时间，超时后跳过该卖家。建议：120")
 
         # Tab 3: 高级与特定模式
         # 种子池组
@@ -685,6 +687,7 @@ class App:
             "seller_sku_workers": str(settings.seller_sku_workers),
             "seller_page_workers": str(settings.seller_page_workers),
             "seed_sku_workers": str(settings.seed_sku_workers),
+            "seller_page_timeout_seconds": str(settings.seller_page_timeout_seconds),
             "retry_failed_now": False,
             "retry_deferred_now": False,
             "retry_rejected_now": False,
@@ -1111,6 +1114,25 @@ class App:
         self._append_log("\n===== 正在停止采集，将在当前卖家结束后退出... =====\n")
         self._stop_btn.config(state="disabled", bg="#7f8c8d")
 
+    @staticmethod
+    def _apply_runtime_overrides(params: dict[str, Any]) -> None:
+        overrides = [
+            ("batch_size", "TOP_LIST_SKU3_BATCH_SIZE", "top_list_sku3_batch_size"),
+            ("concurrency", "TOP_LIST_SKU3_BATCH_CONCURRENCY", "top_list_sku3_batch_concurrency"),
+            ("chunk_delay_ms", "TOP_LIST_SKU3_BATCH_CHUNK_DELAY_MS", "top_list_sku3_batch_chunk_delay_ms"),
+            ("seller_page_timeout_seconds", "SELLER_PAGE_TIMEOUT_SECONDS", "seller_page_timeout_seconds"),
+        ]
+        applied = []
+        for key, env_name, setting_name in overrides:
+            if key not in params:
+                continue
+            value = int(params[key])
+            os.environ[env_name] = str(value)
+            object.__setattr__(settings, setting_name, value)
+            applied.append(f"{key}={value}")
+        if applied:
+            print("GUI运行时配置已应用: " + ", ".join(applied))
+
     def _run_collection(self, mode: str, user_params: dict[str, Any]):
         try:
             from .cli import (
@@ -1138,16 +1160,10 @@ class App:
                 "idle_sleep_seconds": settings.collection_idle_sleep_seconds,
                 "cycle_sleep_seconds": settings.collection_cycle_sleep_seconds,
                 "error_sleep_seconds": settings.collection_error_sleep_seconds,
+                "seller_page_timeout_seconds": settings.seller_page_timeout_seconds,
             }
             full_params.update(user_params)
-            
-            # Handle env vars
-            if "batch_size" in full_params:
-                os.environ["TOP_LIST_SKU3_BATCH_SIZE"] = str(full_params["batch_size"])
-            if "concurrency" in full_params:
-                os.environ["TOP_LIST_SKU3_BATCH_CONCURRENCY"] = str(full_params["concurrency"])
-            if "chunk_delay_ms" in full_params:
-                os.environ["TOP_LIST_SKU3_BATCH_CHUNK_DELAY_MS"] = str(full_params["chunk_delay_ms"])
+            self._apply_runtime_overrides(full_params)
 
             args = Namespace(**full_params)
 
