@@ -1969,7 +1969,7 @@ def _crawl_top_list_network_once(args: argparse.Namespace) -> None:
     try:
         with browser.session():
             # === 阶段1: 逐页拉取+即时处理 ===
-            cached_run = None if args.force_refresh else get_recent_top_list_run(query_key, refresh_hours)
+            cached_run = None
             if cached_run:
                 print(f"reuse cached top-list snapshot: run_id={cached_run['id']} within_hours={refresh_hours}")
             else:
@@ -2145,7 +2145,7 @@ def _multi_category_network_once(args: argparse.Namespace) -> None:
                       and not (isinstance(v, list) and all(x == "" or x is None for x in v))}
 
             query_key = top_list_query_key(filters)
-            cached_run = None if args.force_refresh else get_recent_top_list_run(query_key, args.refresh_hours)
+            cached_run = None
 
             run_id = start_top_list_run(query_key, args.main_type, filters,
                                         page_from=1, page_to=pages_per_category, page_size=page_size)
