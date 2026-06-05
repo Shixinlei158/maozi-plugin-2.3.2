@@ -1205,7 +1205,7 @@ class App:
                     if not hasattr(args, f):
                         setattr(args, f, "")
                 setattr(args, "refresh_hours", 24)
-                setattr(args, "force_refresh", False)
+                setattr(args, "force_refresh", True)
                 setattr(args, "skip_process", False)
                 setattr(args, "retry_failed_now", False)
                 setattr(args, "retry_deferred_now", False)
