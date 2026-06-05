@@ -49,7 +49,7 @@ from .repository import (
     upsert_top_list_item,
     upsert_sku_universe,
 )
-from .rules import TOP_LIST_SEED_RULE, evaluate_selection_rule, evaluate_top_list_prefilter
+from .rules import get_top_list_seed_rule, evaluate_selection_rule, evaluate_top_list_prefilter
 from .util import seller_key
 
 _VERBOSE = False
@@ -1271,7 +1271,7 @@ def expand_seed_pool_items(
 
     for sku, rows in grouped_items.items():
         item = rows[0]
-        prefilter = evaluate_top_list_prefilter(item, rule=TOP_LIST_SEED_RULE)
+        prefilter = evaluate_top_list_prefilter(item, rule=get_top_list_seed_rule())
         vlog(
             "seed prefilter result:",
             f"sku={sku}",
@@ -2006,7 +2006,7 @@ def _crawl_top_list_network_once(args: argparse.Namespace) -> None:
                         it_copy["query_key"] = query_key
                         it_copy["snapshot_hash"] = top_list_snapshot_hash(it)
                         page_items.append(it_copy)
-                    pf_result = [it for it in page_items if evaluate_top_list_prefilter(it, rule=TOP_LIST_SEED_RULE).matched]
+                    pf_result = [it for it in page_items if evaluate_top_list_prefilter(it, rule=get_top_list_seed_rule()).matched]
                     if pf_result:
                         print(f"  page seeds: {len(page_items)}→{len(pf_result)} after prefilter")
                         stats = expand_seed_pool_items(
@@ -2664,7 +2664,7 @@ def process_top_list_sku(
         prefix="top-list",
     )
 
-    preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, None, rule=TOP_LIST_SEED_RULE)
+    preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, None, rule=get_top_list_seed_rule())
     non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
     vlog(
         "top-list preview rule:",
@@ -2694,7 +2694,7 @@ def process_top_list_sku(
             for key, value in metric_overrides.items():
                 if value is not None and value != "":
                     metric_preview[key] = value
-            preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, None, rule=TOP_LIST_SEED_RULE)
+            preview_rule = evaluate_selection_rule(metric_preview, product_snapshot, None, rule=get_top_list_seed_rule())
             non_offer_reasons = [reason for reason in preview_rule.reasons if reason != "跟卖人数缺失"]
         except Exception:
             plugin_card = None
@@ -2711,7 +2711,7 @@ def process_top_list_sku(
                 metric_preview,
                 product_snapshot,
                 seller_offer_count,
-                rule=TOP_LIST_SEED_RULE,
+                rule=get_top_list_seed_rule(),
             )
         except Exception as exc:
             offers = None
@@ -2734,7 +2734,7 @@ def process_top_list_sku(
                 metric_preview,
                 product_snapshot,
                 seller_offer_count,
-                rule=TOP_LIST_SEED_RULE,
+                rule=get_top_list_seed_rule(),
             )
         except Exception as exc:
             if offer_fetch_error is None:

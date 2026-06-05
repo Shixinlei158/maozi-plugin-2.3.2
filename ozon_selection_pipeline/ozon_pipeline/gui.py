@@ -373,6 +373,8 @@ class App:
                        tooltip="勾选后将重试状态为rejected/done的任务")
         self._add_param(lf_seed, 2, 0, "快速模式(跳过SKU3重试)", "fast_mode", False, "bool",
                        tooltip="SKU3获取失败直接跳过，不重试/不打开详情页。适用于所有采集模式")
+        self._add_param(lf_seed, 2, 1, "上架天数上限", "seed_create_days_max", str(settings.seed_create_days_max), "int", min_val=1, max_val=9999,
+                       tooltip="榜单种子扩展规则：商品上架天数超过此值则淘汰。默认200天")
 
         # 榜单组 — 按毛子ERP实际页面字段顺序排列
         lf_top = tk.LabelFrame(tab_adv, text="榜单采集专属配置（留空=不过滤，顺序与网页一致）", bg="#ffffff", padx=8, pady=8)
@@ -1123,6 +1125,7 @@ class App:
             ("concurrency", "TOP_LIST_SKU3_BATCH_CONCURRENCY", "top_list_sku3_batch_concurrency"),
             ("chunk_delay_ms", "TOP_LIST_SKU3_BATCH_CHUNK_DELAY_MS", "top_list_sku3_batch_chunk_delay_ms"),
             ("seller_page_timeout_seconds", "SELLER_PAGE_TIMEOUT_SECONDS", "seller_page_timeout_seconds"),
+            ("seed_create_days_max", "SEED_CREATE_DAYS_MAX", "seed_create_days_max"),
         ]
         bool_overrides = [
             ("fast_mode", "FAST_MODE", "fast_mode"),

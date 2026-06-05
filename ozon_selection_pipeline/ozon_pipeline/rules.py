@@ -71,24 +71,29 @@ DEFAULT_SELECTION_RULE = ProductSelectionRule(
     sold_count=RangeRule(minimum=Decimal("1"), maximum=Decimal("65")),
     price=RangeRule(minimum=Decimal("20"), maximum=Decimal("1000")),
     weight_g=RangeRule(maximum=Decimal("5000")),
-    create_days=RangeRule(maximum=Decimal("180")),
+    create_days=RangeRule(maximum=Decimal(str(settings.default_create_days_max))),
     redemption_rate=RangeRule(maximum=Decimal("5")),
     seller_offer_count=RangeRule(maximum=Decimal("25")),
     required_sales_schema="FBS",
 )
 
 
-TOP_LIST_SEED_RULE = ProductSelectionRule(
-    name="榜单种子扩展",
-    require_unbranded=False,
-    sold_count=RangeRule(minimum=Decimal("3"), maximum=Decimal("200")),
-    price=RangeRule(),
-    weight_g=RangeRule(maximum=Decimal("5000")),
-    create_days=RangeRule(maximum=Decimal("200")),
-    redemption_rate=RangeRule(maximum=Decimal("5")),
-    seller_offer_count=RangeRule(maximum=Decimal("50")),
-    required_sales_schema="FBS",
-)
+def _build_top_list_seed_rule() -> ProductSelectionRule:
+    return ProductSelectionRule(
+        name="榜单种子扩展",
+        require_unbranded=False,
+        sold_count=RangeRule(minimum=Decimal("3"), maximum=Decimal("200")),
+        price=RangeRule(),
+        weight_g=RangeRule(maximum=Decimal("5000")),
+        create_days=RangeRule(maximum=Decimal(str(settings.seed_create_days_max))),
+        redemption_rate=RangeRule(maximum=Decimal("5")),
+        seller_offer_count=RangeRule(maximum=Decimal("50")),
+        required_sales_schema="FBS",
+    )
+
+
+def get_top_list_seed_rule() -> ProductSelectionRule:
+    return _build_top_list_seed_rule()
 
 
 def evaluate_selection_rule(

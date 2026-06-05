@@ -11,7 +11,7 @@ from . import db
 from .config import settings
 from .seed_categories import ensure_categories_from_top_list
 from .ozon_frontend import parse_seller_home_tile
-from .rules import TOP_LIST_SEED_RULE, ProductSelectionResult, evaluate_selection_rule, price_to_cny
+from .rules import get_top_list_seed_rule, ProductSelectionResult, evaluate_selection_rule, price_to_cny
 from .util import (
     grams_from_text,
     json_dumps,
