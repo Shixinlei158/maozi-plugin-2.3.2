@@ -2167,6 +2167,7 @@ def _multi_category_network_once(args: argparse.Namespace) -> None:
                         payload = body.get("data") or {}
                         items = payload.get("data") or []
                         if not items:
+                            print(f"  DEBUG[{cat_name}]: API returned ok but data=[], payload keys={list(payload.keys())[:10]}, body keys={list(body.keys())[:5]}")
                             break
                         bulk_upsert_top_list_page(query_key, run_id, page_no, items)
                         cat_pages += 1
