@@ -156,8 +156,8 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Ozon 采集控制台 (v2.3.2 专业版)")
-        self.root.geometry("1400x900")
-        self.root.minsize(1200, 750)
+        self.root.geometry("1100x700")
+        self.root.minsize(900, 580)
         self.root.configure(bg="#f5f6fa")
 
         self._stop_flag = threading.Event()
@@ -230,72 +230,72 @@ class App:
             text="Ozon Selection Pipeline — 智能采集调度中心",
             bg="#2c3e50",
             fg="white",
-            font=("Microsoft YaHei", 11, "bold"),
-            pady=6,
+            font=("Microsoft YaHei", 10, "bold"),
+            pady=4,
         )
         info_bar.pack(fill="x")
 
-        dashboard = Frame(self.root, bg="#ffffff", padx=12, pady=8, relief="ridge", bd=1)
-        dashboard.pack(fill="x", padx=8, pady=(8, 4))
-        Label(dashboard, text="运行状态", bg="#ffffff", font=("Microsoft YaHei", 10, "bold")).grid(
-            row=0, column=0, columnspan=5, sticky="w", pady=(0, 4)
+        dashboard = Frame(self.root, bg="#ffffff", padx=8, pady=4, relief="ridge", bd=1)
+        dashboard.pack(fill="x", padx=4, pady=(4, 2))
+        Label(dashboard, text="运行状态", bg="#ffffff", font=("Microsoft YaHei", 9, "bold")).grid(
+            row=0, column=0, columnspan=5, sticky="w", pady=(0, 2)
         )
 
-        self._cdp_label = Label(dashboard, text="CDP: 检测中...", bg="#ffffff", font=("Microsoft YaHei", 9))
-        self._cdp_label.grid(row=1, column=0, padx=(0, 10), sticky="w")
-        self._db_label = Label(dashboard, text="DB:  检测中...", bg="#ffffff", font=("Microsoft YaHei", 9))
-        self._db_label.grid(row=1, column=1, padx=(0, 10), sticky="w")
-        self._plugin_label = Label(dashboard, text="插件: 检测中...", bg="#ffffff", font=("Microsoft YaHei", 9))
-        self._plugin_label.grid(row=1, column=2, padx=(0, 10), sticky="w")
-        self._seller_label = Label(dashboard, text="卖家: 检测中...", bg="#ffffff", font=("Microsoft YaHei", 9))
+        self._cdp_label = Label(dashboard, text="CDP: 检测中...", bg="#ffffff", font=("Microsoft YaHei", 8))
+        self._cdp_label.grid(row=1, column=0, padx=(0, 8), sticky="w")
+        self._db_label = Label(dashboard, text="DB:  检测中...", bg="#ffffff", font=("Microsoft YaHei", 8))
+        self._db_label.grid(row=1, column=1, padx=(0, 8), sticky="w")
+        self._plugin_label = Label(dashboard, text="插件: 检测中...", bg="#ffffff", font=("Microsoft YaHei", 8))
+        self._plugin_label.grid(row=1, column=2, padx=(0, 8), sticky="w")
+        self._seller_label = Label(dashboard, text="卖家: 检测中...", bg="#ffffff", font=("Microsoft YaHei", 8))
         self._seller_label.grid(row=1, column=3, sticky="w")
         self._db_profile_var = tk.StringVar(value="ts-lx")
         db_profile_frame = Frame(dashboard, bg="#ffffff")
         db_profile_frame.grid(row=1, column=4, sticky="w")
-        Label(db_profile_frame, text="DB:", bg="#ffffff", font=("Microsoft YaHei", 9)).pack(side="left")
+        Label(db_profile_frame, text="DB:", bg="#ffffff", font=("Microsoft YaHei", 8)).pack(side="left")
         db_combo = ttk.Combobox(db_profile_frame, textvariable=self._db_profile_var,
                                 values=["local", "ts-lx", "frp-lx"],
-                                state="readonly", width=8, font=("Microsoft YaHei", 9))
-        db_combo.pack(side="left", padx=(2, 4))
+                                state="readonly", width=7, font=("Microsoft YaHei", 8))
+        db_combo.pack(side="left", padx=(2, 3))
         db_combo.bind("<<ComboboxSelected>>", self._on_db_profile_changed)
         self._sync_btn = Button(db_profile_frame, text="同步", bg="#95a5a6", fg="white",
-                               font=("Microsoft YaHei", 8), width=4, padx=2, pady=0,
+                               font=("Microsoft YaHei", 7), width=3, padx=1, pady=0,
                                command=self._sync_db_structure, relief="flat")
         self._sync_btn.pack(side="left")
-        self._db_status_label = Label(db_profile_frame, text="", bg="#ffffff", font=("Microsoft YaHei", 8), fg="#27ae60")
-        self._db_status_label.pack(side="left", padx=(4, 0))
-        self._mode_label = Label(dashboard, text="模式: 待机", bg="#ffffff", font=("Microsoft YaHei", 9))
-        self._mode_label.grid(row=2, column=0, padx=(0, 10), sticky="w")
-        self._phase_label = Label(dashboard, text="阶段: 未开始", bg="#ffffff", font=("Microsoft YaHei", 9))
-        self._phase_label.grid(row=2, column=1, padx=(0, 10), sticky="w")
-        self._progress_label = Label(dashboard, text="进度: 暂无", bg="#ffffff", font=("Microsoft YaHei", 9))
-        self._progress_label.grid(row=2, column=2, padx=(0, 10), sticky="w")
-        self._issue_label = Label(dashboard, text="异常: 暂无", bg="#ffffff", font=("Microsoft YaHei", 9))
+        self._db_status_label = Label(db_profile_frame, text="", bg="#ffffff", font=("Microsoft YaHei", 7), fg="#27ae60")
+        self._db_status_label.pack(side="left", padx=(2, 0))
+        self._mode_label = Label(dashboard, text="模式: 待机", bg="#ffffff", font=("Microsoft YaHei", 8))
+        self._mode_label.grid(row=2, column=0, padx=(0, 8), sticky="w")
+        self._phase_label = Label(dashboard, text="阶段: 未开始", bg="#ffffff", font=("Microsoft YaHei", 8))
+        self._phase_label.grid(row=2, column=1, padx=(0, 8), sticky="w")
+        self._progress_label = Label(dashboard, text="进度: 暂无", bg="#ffffff", font=("Microsoft YaHei", 8))
+        self._progress_label.grid(row=2, column=2, padx=(0, 8), sticky="w")
+        self._issue_label = Label(dashboard, text="异常: 暂无", bg="#ffffff", font=("Microsoft YaHei", 8))
         self._issue_label.grid(row=2, column=3, sticky="w")
         self._current_seller_label = Label(
             dashboard,
             text="当前卖家: 暂无",
             bg="#ffffff",
-            font=("Microsoft YaHei", 9),
+            font=("Microsoft YaHei", 8),
             anchor="w",
             justify="left",
-            wraplength=980,
+            wraplength=700,
         )
-        self._current_seller_label.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        self._current_seller_label.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(4, 0))
 
         # 核心控制区
         main_frame = Frame(self.root, bg="#f5f6fa")
         main_frame.pack(fill="both", expand=True, padx=4, pady=2)
 
-        control_panel = Frame(main_frame, bg="#ffffff", padx=8, pady=8, relief="ridge", bd=1)
-        control_panel.pack(side="left", fill="both", expand=False, padx=(4, 2), pady=2)
+        control_panel = Frame(main_frame, bg="#ffffff", padx=6, pady=6, relief="ridge", bd=1)
+        control_panel.pack(side="left", fill="both", expand=False, padx=(2, 1), pady=1)
 
         # 模式选择
-        Label(control_panel, text="采集模式", bg="#ffffff", font=("Microsoft YaHei", 10, "bold")).grid(
-            row=0, column=0, sticky="w", pady=(0, 4)
+        Label(control_panel, text="采集模式", bg="#ffffff", font=("Microsoft YaHei", 9, "bold")).grid(
+            row=0, column=0, sticky="w", pady=(0, 2)
         )
         mode_frame = Frame(control_panel, bg="#ffffff")
-        mode_frame.grid(row=1, column=0, sticky="w", pady=(0, 6))
+        mode_frame.grid(row=1, column=0, sticky="w", pady=(0, 4))
         modes = [
             ("卖家列表循环扩充 (推荐)", "expand-seller-backlog"),
             ("榜单采集网络", "crawl-top-list-network"),
@@ -309,15 +309,15 @@ class App:
                 variable=self._mode_var,
                 value=value,
                 command=self._update_linkages
-            ).grid(row=0, column=idx, padx=(0, 14))
+            ).grid(row=0, column=idx, padx=(0, 10))
 
         # 参数配置 Notebook
         self._notebook = ttk.Notebook(control_panel)
-        self._notebook.grid(row=2, column=0, sticky="ew", pady=(6, 4))
+        self._notebook.grid(row=2, column=0, sticky="ew", pady=(4, 2))
 
-        tab_core = Frame(self._notebook, bg="#ffffff", padx=8, pady=8)
-        tab_conc = Frame(self._notebook, bg="#ffffff", padx=8, pady=8)
-        tab_adv = Frame(self._notebook, bg="#ffffff", padx=8, pady=8)
+        tab_core = Frame(self._notebook, bg="#ffffff", padx=6, pady=6)
+        tab_conc = Frame(self._notebook, bg="#ffffff", padx=6, pady=6)
+        tab_adv = Frame(self._notebook, bg="#ffffff", padx=6, pady=6)
 
         self._notebook.add(tab_core, text="采集范围与循环")
         self._notebook.add(tab_conc, text="效率与跳过策略")
@@ -361,7 +361,7 @@ class App:
 
         # Tab 3: 高级与特定模式
         # 种子池组
-        lf_seed = tk.LabelFrame(tab_adv, text="种子池专属配置", bg="#ffffff", padx=8, pady=8)
+        lf_seed = tk.LabelFrame(tab_adv, text="种子池专属配置", bg="#ffffff", padx=6, pady=6)
         lf_seed.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
         self._add_param(lf_seed, 0, 0, "强制重试失败项", "retry_failed_now", False, "bool", 
                        tooltip="勾选后将重试状态为failed的任务")
@@ -377,11 +377,11 @@ class App:
                        tooltip="榜单种子扩展规则：商品上架天数超过此值则淘汰。默认200天")
 
         # 榜单组 — 按毛子ERP实际页面字段顺序排列
-        lf_top = tk.LabelFrame(tab_adv, text="榜单采集专属配置（留空=不过滤，顺序与网页一致）", bg="#ffffff", padx=8, pady=8)
+        lf_top = tk.LabelFrame(tab_adv, text="榜单采集专属配置（留空=不过滤，顺序与网页一致）", bg="#ffffff", padx=6, pady=6)
         lf_top.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
 
         def _add_section_label(parent, row, text):
-            lbl = Label(parent, text=text, bg="#ffffff", font=("Microsoft YaHei", 9, "bold"), fg="#3498db")
+            lbl = Label(parent, text=text, bg="#ffffff", font=("Microsoft YaHei", 8, "bold"), fg="#3498db")
             lbl.grid(row=row, column=0, columnspan=3, sticky="w", padx=10, pady=(8, 2))
 
         _add_section_label(lf_top, 0, "基础设置")
@@ -456,7 +456,7 @@ class App:
                        tooltip="排序方向：asc(升序), desc(降序)")
 
         # 多类目组
-        lf_mcat = tk.LabelFrame(tab_adv, text="多类目采集专属配置", bg="#ffffff", padx=8, pady=8)
+        lf_mcat = tk.LabelFrame(tab_adv, text="多类目采集专属配置", bg="#ffffff", padx=6, pady=6)
         lf_mcat.grid(row=2, column=0, sticky="ew", padx=4, pady=4)
         self._add_param(lf_mcat, 0, 0, "类目层级", "category_level", "1", "str",
                        tooltip="遍历哪一层的类目：1(一级,26个), 2(二级,393个), 3(三级,1429个), all(全部)")
@@ -468,61 +468,61 @@ class App:
         btn_frame.grid(row=3, column=0, sticky="w", pady=(12, 0))
 
         self._start_browser_btn = Button(
-            btn_frame, text="启动浏览器", bg="#3498db", fg="white", font=("Microsoft YaHei", 10, "bold"),
-            width=12, padx=8, pady=4, command=self._launch_browser, relief="flat"
+            btn_frame, text="启动浏览器", bg="#3498db", fg="white", font=("Microsoft YaHei", 9, "bold"),
+            width=10, padx=6, pady=3, command=self._launch_browser, relief="flat"
         )
-        self._start_browser_btn.pack(side="left", padx=(0, 8))
+        self._start_browser_btn.pack(side="left", padx=(0, 6))
 
         self._restart_browser_btn = Button(
-            btn_frame, text="重启浏览器", bg="#e67e22", fg="white", font=("Microsoft YaHei", 10, "bold"),
-            width=12, padx=8, pady=4, command=self._restart_browser, relief="flat"
+            btn_frame, text="重启浏览器", bg="#e67e22", fg="white", font=("Microsoft YaHei", 9, "bold"),
+            width=10, padx=6, pady=3, command=self._restart_browser, relief="flat"
         )
-        self._restart_browser_btn.pack(side="left", padx=(0, 8))
+        self._restart_browser_btn.pack(side="left", padx=(0, 6))
 
         self._start_btn = Button(
-            btn_frame, text="▶ 开始采集", bg="#27ae60", fg="white", font=("Microsoft YaHei", 10, "bold"),
-            width=12, padx=8, pady=4, command=self._start_collection, relief="flat"
+            btn_frame, text="▶ 开始采集", bg="#27ae60", fg="white", font=("Microsoft YaHei", 9, "bold"),
+            width=10, padx=6, pady=3, command=self._start_collection, relief="flat"
         )
-        self._start_btn.pack(side="left", padx=(0, 8))
+        self._start_btn.pack(side="left", padx=(0, 6))
 
         self._refresh_btn = Button(
-            btn_frame, text="↻ 刷新状态", bg="#3498db", fg="white", font=("Microsoft YaHei", 10),
-            width=10, padx=8, pady=4, command=self._manual_refresh_status, relief="flat"
+            btn_frame, text="↻ 刷新状态", bg="#3498db", fg="white", font=("Microsoft YaHei", 9),
+            width=8, padx=6, pady=3, command=self._manual_refresh_status, relief="flat"
         )
-        self._refresh_btn.pack(side="left", padx=(0, 8))
+        self._refresh_btn.pack(side="left", padx=(0, 6))
 
         self._stop_btn = Button(
-            btn_frame, text="■ 停止采集", bg="#e74c3c", fg="white", font=("Microsoft YaHei", 10, "bold"),
-            width=12, padx=8, pady=4, command=self._stop_collection, relief="flat", state="disabled"
+            btn_frame, text="■ 停止采集", bg="#e74c3c", fg="white", font=("Microsoft YaHei", 9, "bold"),
+            width=10, padx=6, pady=3, command=self._stop_collection, relief="flat", state="disabled"
         )
-        self._stop_btn.pack(side="left", padx=(0, 8))
+        self._stop_btn.pack(side="left", padx=(0, 6))
 
         self._save_btn = Button(
-            btn_frame, text="暂存配置", bg="#f39c12", fg="white", font=("Microsoft YaHei", 9),
-            padx=8, pady=4, command=self._save_config, relief="flat"
+            btn_frame, text="暂存配置", bg="#f39c12", fg="white", font=("Microsoft YaHei", 8),
+            padx=5, pady=2, command=self._save_config, relief="flat"
         )
-        self._save_btn.pack(side="left", padx=(0, 8))
+        self._save_btn.pack(side="left", padx=(0, 5))
 
         self._reset_btn = Button(
-            btn_frame, text="恢复默认", bg="#95a5a6", fg="white", font=("Microsoft YaHei", 9),
-            padx=8, pady=4, command=self._reset_config, relief="flat"
+            btn_frame, text="恢复默认", bg="#95a5a6", fg="white", font=("Microsoft YaHei", 8),
+            padx=5, pady=2, command=self._reset_config, relief="flat"
         )
-        self._reset_btn.pack(side="left", padx=(0, 8))
+        self._reset_btn.pack(side="left", padx=(0, 5))
 
         self._clear_btn = Button(
-            btn_frame, text="清空日志", bg="#95a5a6", fg="white", font=("Microsoft YaHei", 9),
-            padx=8, pady=4, command=self._clear_log, relief="flat"
+            btn_frame, text="清空日志", bg="#95a5a6", fg="white", font=("Microsoft YaHei", 8),
+            padx=5, pady=2, command=self._clear_log, relief="flat"
         )
         self._clear_btn.pack(side="left")
 
         # 日志区
-        log_frame = Frame(main_frame, bg="#ffffff", padx=12, pady=8, relief="ridge", bd=1)
-        log_frame.pack(side="right", fill="both", expand=True, padx=(2, 4), pady=2)
-        Label(log_frame, text="运行日志", bg="#ffffff", font=("Microsoft YaHei", 10, "bold")).pack(anchor="w", pady=(0, 4))
+        log_frame = Frame(main_frame, bg="#ffffff", padx=6, pady=4, relief="ridge", bd=1)
+        log_frame.pack(side="right", fill="both", expand=True, padx=(1, 2), pady=1)
+        Label(log_frame, text="运行日志", bg="#ffffff", font=("Microsoft YaHei", 9, "bold")).pack(anchor="w", pady=(0, 2))
 
         self._log_area = scrolledtext.ScrolledText(
-            log_frame, wrap="word", font=("Consolas", 9), bg="#1e1e1e", fg="#d4d4d4",
-            insertbackground="white", state="normal", height=20
+            log_frame, wrap="word", font=("Consolas", 8), bg="#1e1e1e", fg="#d4d4d4",
+            insertbackground="white", state="normal", height=15
         )
         self._log_area.pack(fill="both", expand=True)
         self._log_area.configure(state="disabled")
@@ -534,14 +534,14 @@ class App:
 
     def _add_param(self, parent: Frame, row: int, col: int, label: str, key: str, default: Any, ptype: str, min_val=None, max_val=None, tooltip=""):
         frame = Frame(parent, bg="#ffffff")
-        frame.grid(row=row, column=col, sticky="w", padx=10, pady=4)
+        frame.grid(row=row, column=col, sticky="w", padx=6, pady=2)
         
         lbl_text = label
         if tooltip:
             lbl_text += " (?)"
             
-        lbl = Label(frame, text=lbl_text, bg="#ffffff", font=("Microsoft YaHei", 9), cursor="question_arrow")
-        lbl.pack(side="left", padx=(0, 4))
+        lbl = Label(frame, text=lbl_text, bg="#ffffff", font=("Microsoft YaHei", 8), cursor="question_arrow")
+        lbl.pack(side="left", padx=(0, 3))
         
         if tooltip:
             ToolTip(lbl, tooltip)
@@ -552,7 +552,7 @@ class App:
             ent.pack(side="left")
         else:
             var = StringVar(value=str(default))
-            ent = Entry(frame, textvariable=var, width=12, font=("Consolas", 9), relief="sunken", bd=1)
+            ent = Entry(frame, textvariable=var, width=10, font=("Consolas", 8), relief="sunken", bd=1)
             ent.pack(side="left")
             
             # Save validation rules
