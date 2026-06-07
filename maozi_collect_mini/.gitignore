@@ -1,0 +1,9 @@
+settings.json
+*.pyc
+__pycache__/
+profiles/
+*.log
+*.log.*
+gui_config.json
+config.json
+*.tmp
