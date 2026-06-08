@@ -261,7 +261,9 @@ def run_seller_collection(limit: int = 0, stop_flag=None) -> dict[str, int]:
                             "raw": {"seller_home": it},
                         }
 
-                        seller_offer_count = None
+                        # 获取跟卖人数（Ozon开放API，从ozon.ru同源请求）
+                        offers = browser.fetch_seller_offers(sku)
+                        seller_offer_count = len(offers) if isinstance(offers, list) else None
                         result_obj = evaluate_selection_rule(
                             metric, product_snapshot, seller_offer_count
                         )

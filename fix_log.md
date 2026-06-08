@@ -1,4 +1,55 @@
-﻿# 修改日志 (Fix Log)
+# 修改日志 (Fix Log)
+
+---
+
+## 2026-06-08 17:00
+
+**Git Commit**: `待提交`
+
+**修改文件列表**：
+- `maozi_collect_mini/seller_collector.py`
+
+**修改目的**：
+卖家主页采集补齐跟卖人数获取：`seller_offer_count = None` 硬编码改为调用 `browser.fetch_seller_offers(sku)` 从 Ozon 跟卖 API 获取实际跟卖卖家列表，取 `len()` 作为跟卖人数传入 0325 规则判定。
+
+**方案选择原因**：
+对照排查发现 0325 规则 8 个字段中，`seller_offer_count`（跟卖人数）是唯一从未获取的字段 —— 代码硬编码 `None` 导致 100% 命中 "跟卖人数缺失" 淘汰。其余 7 个字段（brand/price/sold_count/weight/create_days/redemption_rate/sales_schema）均来自 SKU3 或 tile JSON，虽有缺失但字段映射正确。`fetch_seller_offers` 方法早已就绪（榜单阶段在用），卖家阶段只需接入调用即可。
+
+0325 规则字段全覆盖排查（本轮产出）：
+
+| 字段 | 来源 | 现状 |
+|------|------|------|
+| brand | SKU3 data.brand | ✅ 正常（空=无品牌=通过） |
+| price | tile price_amount | ✅ tile自带，不受SKU3影响 |
+| sold_count | SKU3 data.soldCount | ⚠️ SKU3频繁返回null |
+| weight_g | SKU3 data.custom_weight | ⚠️ SKU3频繁返回null |
+| create_days | SKU3 data.createDays | ⚠️ SKU3频繁返回null |
+| redemption_rate | SKU3 data.nullableRedemptionRate | ⚠️ SKU3频繁返回null |
+| sales_schema | SKU3 data.salesSchema | ⚠️ SKU3频繁返回null |
+| seller_offer_count | Ozon跟卖API | ✅ **本轮修复** |
+
+**注意**：月销量/重量/上架天数/退货取消率/发货模式 5 个字段的缺失是毛子 SKU3 API 数据质量问题（接口返回但字段为null），需后续排查 SKU3 为何不返回这些数据。
+
+**具体修改内容**：
+1. `seller_collector.py` — `seller_offer_count = None` → `offers = browser.fetch_seller_offers(sku); seller_offer_count = len(offers) if isinstance(offers, list) else None`
+
+---
+
+## 2026-06-08 16:00
+
+**Git Commit**: `118789b`
+
+**修改文件列表**：
+- `AGENTS.md`
+
+**修改目的**：
+在 AGENTS.md 的"修改日志记录与追踪规范"中新增第 3 条规则：每轮修改后必须提交 Git 并将 Commit ID 写入 fix_log.md 对应条目。
+
+**方案选择原因**：
+用户要求建立 Git 提交与 fix_log.md 的关联追踪机制。在 fix_log.md 的条目中增加 `**Git Commit**` 字段，记录短哈希，便于从日志快速定位源码变更。原第 3 条"结束语"重新编号为第 4 条。
+
+**具体修改内容**：
+1. `AGENTS.md` — 在"修改日志记录与追踪规范"中新增 `#### 3. 每轮修改后提交 Git 并记录 Commit ID` 规则，包含提交要求和 Commit ID 写入格式说明；原"结束语"条目重新编号为 `#### 4.`
 
 ---
 
