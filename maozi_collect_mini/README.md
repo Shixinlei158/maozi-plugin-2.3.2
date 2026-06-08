@@ -321,6 +321,51 @@
 
 ---
 
+### 2.11 `captcha_handler.py` — 验证码与登录恢复
+
+**能力边界：**
+
+| 功能 | 入口函数 | 说明 |
+|------|----------|------|
+| 滑块验证码 | `SliderHandler(page).solve()` | 拟人化拖动 vben-spine 滑块，支持重试 |
+| 自动登录 | `auto_login(context)` | 打开登录页 → 填用户名密码 → 滑块验证 → 点击登录 → 等待成功 |
+| 插件弹窗处理 | `handle_plugin_login_popup(context)` | 检测 Ozon 页面中毛子插件的"请登录"按钮 → 点击 → 自动登录 |
+| 多级统一恢复 | `unified_login_recovery(context)` | 按优先级：1.插件弹窗 → 2.扫描登录页 → 3.主动登录 |
+| 状态检测 | `detect_captcha_present(page)` / `detect_login_expired(page)` | 检测滑块验证码或登录页 |
+
+**多级恢复执行顺序（`unified_login_recovery`）：**
+
+```
+方法1: 刷新 Ozon 页面 → 检测插件"请登录"弹窗 → 点击 → auto_login
+  └── 失败 ↓
+方法2: 扫描所有毛子页面 → 如果存在登录页 → auto_login
+  └── 失败 ↓
+方法3: 主动打开登录页 → auto_login
+  └── 失败 → 飞书告警 + 返回 False
+```
+
+**拟人化滑块拖动（`SliderHandler._human_like_drag`）：**
+- 缓动曲线：慢-快-慢（ease-in-out），40~60步
+- Y轴高斯抖动（σ=1.5），模拟手抖
+- 末尾随机过冲（0~3%），模拟惯性
+- 不均匀步长时间（3~15ms）
+
+**自动登录流程（`auto_login`）：**
+1. 导航到 `ozon.maozierp.com/#/auth/login`
+2. 轮询等待"请按住滑块拖动"文字出现（15s超时）
+3. 填写用户名/密码（前两个 `input` 元素）
+4. 勾选"记住账号"复选框
+5. 调用 `SliderHandler.solve()` 拖动滑块
+6. 点击"登录"按钮
+7. 轮询 `localStorage` 中 `maozierp-core-access.accessToken` 出现（15s超时）
+
+**不负责：**
+- 不处理 Ozon 自身的验证码（Cloudflare Turnstile 等）
+- 不处理账号封禁/密码过期等非技术性登录失败
+- 飞书告警依赖 `feishu.py` 模块存在
+
+---
+
 ## 三、数据库表结构
 
 ### 3.1 `ozon_categories` — 类目树
