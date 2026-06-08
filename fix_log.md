@@ -4,6 +4,8 @@
 
 ## 2026-06-08 15:30
 
+**Git Commit**: `09a325d`
+
 **修改文件列表**：
 - `maozi_collect_mini/seller_collector.py`
 - `maozi_collect_mini/browser.py`
