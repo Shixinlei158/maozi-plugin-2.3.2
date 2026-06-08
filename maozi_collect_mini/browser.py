@@ -359,7 +359,7 @@ class BrowserClient:
             # 从缓存ozon页面导航到卖家主页（同源请求，视觉反馈）
             page = self._get_ozon_page()
             remaining = page_timeout * 1000
-            page.goto(seller_url, wait_until="domcontentloaded", timeout=min(remaining, 30000))
+            page.goto(seller_url, wait_until="domcontentloaded", timeout=remaining)
             page.wait_for_timeout(300)
 
             # 提取卖家路径（相对URL）
