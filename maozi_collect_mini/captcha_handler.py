@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import random
-import time
 import math
 from typing import Any
 
@@ -31,145 +30,136 @@ MAOZI_SELECTION_ORIGIN = "https://ozon.maozierp.com"
 # ============================================================
 
 class SliderHandler:
-    """滑块验证码处理：拟人化拖动 vben-spine 滑块"""
+    """拟人化滑块拖动处理器
+
+    针对毛子ERP登录页面的vben-spine滑块验证：
+    - 查找 .vben-spine-text 元素
+    - 从其父级的父级获取轨道尺寸
+    - 从轨道左边缘拟人化拖动到右边缘
+    """
 
     def __init__(self, page: Page):
-        self._page = page
+        self.page = page
 
     def solve(self, max_retries: int = 3) -> bool:
-        """自动拖动滑块，最多重试 max_retries 次"""
         for attempt in range(max_retries):
-            if self._already_verified():
-                print(f"[滑块] 已经验证通过，跳过拖动")
-                return True
+            try:
+                if self._already_verified():
+                    print("[滑块] 已经验证通过")
+                    return True
 
-            print(f"[滑块] 第 {attempt + 1}/{max_retries} 次尝试拖动...")
+                track = self._get_track_info()
+                if not track:
+                    print("[滑块] 未找到滑块轨道")
+                    return False
 
-            track_info = self._get_track_info()
-            if not track_info:
-                print("[滑块] 未找到滑块轨道元素")
-                time.sleep(3)
-                continue
+                start_x = track['x'] + 20
+                start_y = track['y'] + track['h'] / 2
+                end_x = track['x'] + track['w'] - 20
 
-            success = self._human_like_drag(track_info)
-            if success:
-                time.sleep(1.5)
-                if self._check_result(5):
+                print(f"[滑块] 拖动: ({start_x:.0f},{start_y:.0f}) -> ({end_x:.0f},{start_y:.0f}) 距离={end_x-start_x:.0f}px")
+
+                self._human_like_drag(start_x, start_y, end_x)
+
+                self.page.wait_for_timeout(800)
+                if self._check_result():
                     print("[滑块] 验证成功")
                     return True
-                print("[滑块] 拖动完成但验证未通过，等待重试...")
-            else:
-                print("[滑块] 拖动执行失败")
 
-            if attempt < max_retries - 1:
-                time.sleep(2)
+                print(f"[滑块] 拖动完成但验证未通过，等待重试...")
+                self.page.wait_for_timeout(random.uniform(500, 1500))
+
+            except Exception as exc:
+                print(f"[滑块] 处理失败 (尝试 {attempt+1}): {exc}")
+                try:
+                    self.page.mouse.up()
+                except Exception:
+                    pass
+                self.page.wait_for_timeout(1000)
 
         return False
 
     def _already_verified(self) -> bool:
-        """检查是否已经验证通过（滑块元素不存在或显示"验证通过"）"""
         try:
-            text = self._page.evaluate("""() => {
-                const el = document.querySelector('.vben-spine-text');
-                return el ? el.innerText.trim() : null;
+            text = self.page.evaluate("""() => {
+                const s = document.querySelector('.vben-spine-text');
+                if (!s) return '__ELEMENT_GONE__';
+                return s.innerText || '';
             }""")
-            if text == "验证通过":
-                return True
-            return False
+            return text == '验证通过' or text == '__ELEMENT_GONE__'
         except Exception:
             return False
 
-    def _get_track_info(self) -> dict[str, Any] | None:
-        """获取滑块轨道尺寸和滑块位置"""
+    def _get_track_info(self) -> dict[str, float] | None:
+        """获取轨道尺寸：从 spine 元素往上两级取轨道"""
         try:
-            info = self._page.evaluate("""() => {
-                const spineText = document.querySelector('.vben-spine-text');
-                if (!spineText) return null;
-                const spine = spineText.parentElement;
+            info = self.page.evaluate("""() => {
+                const spine = document.querySelector('.vben-spine-text');
                 if (!spine) return null;
-                const spineRect = spine.getBoundingClientRect();
-                const block = spine.querySelector('.vben-spine-block') || spine;
-                const blockRect = block.getBoundingClientRect();
-                return {
-                    trackLeft: spineRect.left,
-                    trackTop: spineRect.top,
-                    trackWidth: spineRect.width,
-                    trackHeight: spineRect.height,
-                    blockWidth: blockRect.width,
-                    blockHeight: blockRect.height,
-                    blockLeft: blockRect.left,
-                    blockTop: blockRect.top,
-                };
+                const track = spine.parentElement.parentElement;
+                const rect = track.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) return null;
+                return {x: rect.x, y: rect.y, w: rect.width, h: rect.height};
             }""")
-            if not info:
-                return None
-            info["startX"] = info["blockLeft"] + info["blockWidth"] / 2
-            info["startY"] = info["blockTop"] + info["blockHeight"] / 2
-            info["targetX"] = info["trackLeft"] + info["trackWidth"] - info["blockWidth"] / 2
             return info
         except Exception:
             return None
 
-    def _human_like_drag(self, track_info: dict[str, Any]) -> bool:
-        """拟人化拖动滑块：慢-快-慢缓动 + 随机抖动"""
+    def _human_like_drag(self, start_x: float, start_y: float, end_x: float) -> None:
+        distance = end_x - start_x
+
+        self.page.mouse.move(start_x, start_y)
+        self.page.wait_for_timeout(random.uniform(100, 200))
+
+        self.page.mouse.down()
+        self.page.wait_for_timeout(random.uniform(50, 100))
+
+        steps = random.randint(40, 60)
+        for i in range(1, steps + 1):
+            progress = i / steps
+
+            # 三段分段缓动：慢-快-慢（与原版对齐）
+            if progress < 0.15:
+                eased = progress * 0.6
+            elif progress < 0.85:
+                eased = 0.09 + (progress - 0.15) * 1.1
+            else:
+                eased = 0.86 + (progress - 0.85) * 0.93
+            eased = min(eased, 1.0)
+
+            cx = start_x + distance * eased
+            cy = start_y + random.gauss(0, 1.5)
+
+            dt = 0.015 + random.uniform(0, 0.015)
+            if progress > 0.9:
+                dt += random.uniform(0.01, 0.03)
+
+            self.page.mouse.move(cx, cy)
+            self.page.wait_for_timeout(int(dt * 1000))
+
+        # 最终对齐
+        self.page.mouse.move(end_x, start_y)
+        self.page.wait_for_timeout(random.uniform(30, 80))
+
+        self.page.mouse.up()
+
+    def _check_result(self) -> bool:
+        """轮询检查验证结果（8次 × 0.5秒 = 4秒，与原版对齐）"""
         try:
-            self._page.mouse.move(track_info["startX"], track_info["startY"])
-            time.sleep(random.uniform(0.1, 0.2))
-            self._page.mouse.down()
-            time.sleep(random.uniform(0.05, 0.1))
-
-            total_distance = track_info["targetX"] - track_info["startX"]
-            steps = random.randint(40, 60)
-            base_y = track_info["startY"]
-
-            for i in range(steps):
-                progress = i / (steps - 1)
-                # 缓动曲线: 慢-快-慢 (ease-in-out)
-                eased = _ease_in_out(progress)
-                target_x = track_info["startX"] + total_distance * eased
-
-                # 加一点随机过冲（模拟惯性）
-                if progress > 0.9:
-                    overshoot = total_distance * random.uniform(0.0, 0.03)
-                    target_x += overshoot
-
-                y_jitter = random.gauss(0, 1.5)  # 高斯抖动
-                target_y = base_y + y_jitter
-
-                self._page.mouse.move(target_x, target_y)
-                # 不均匀时间间隔，模拟人类操作
-                time.sleep(random.uniform(0.003, 0.015))
-
-            self._page.mouse.up()
-            return True
+            for _ in range(8):
+                self.page.wait_for_timeout(500)
+                text = self.page.evaluate("""() => {
+                    const s = document.querySelector('.vben-spine-text');
+                    if (!s) return '__ELEMENT_GONE__';
+                    return s.innerText || '';
+                }""")
+                if text == '验证通过':
+                    return True
+                if text == '__ELEMENT_GONE__':
+                    return True
+            return False
         except Exception:
             return False
-
-    def _check_result(self, timeout_seconds: int = 5) -> bool:
-        """轮询检查验证结果"""
-        deadline = time.time() + timeout_seconds
-        while time.time() < deadline:
-            try:
-                text = self._page.evaluate("""() => {
-                    const el = document.querySelector('.vben-spine-text');
-                    return el ? el.innerText.trim() : null;
-                }""")
-                if text == "验证通过":
-                    return True
-                # 滑块元素消失也是通过
-                if text is None:
-                    return True
-            except Exception:
-                pass
-            time.sleep(0.5)
-        return False
-
-
-def _ease_in_out(t: float) -> float:
-    """慢-快-慢缓动函数"""
-    if t < 0.5:
-        return 2 * t * t
-    return -1 + (4 - 2 * t) * t
 
 
 # ============================================================
@@ -201,19 +191,26 @@ def detect_login_expired(page: Page) -> bool:
 # 自动登录
 # ============================================================
 
-def auto_login(context: BrowserContext, max_retries: int = 3) -> bool:
+def auto_login(
+    page: Page,
+    username: str | None = None,
+    password: str | None = None,
+    max_retries: int = 3,
+) -> bool:
     """自动完成毛子ERP登录流程（含滑块验证）
 
     流程：
-    1. 打开登录页
-    2. 填写用户名/密码
-    3. 勾选"记住账号"
-    4. 拖动滑块
+    1. 导航到登录页
+    2. 等待SPA渲染
+    3. 检查是否需要填账号密码（可能已预填）
+    4. 拖动滑块完成验证
     5. 点击登录按钮
-    6. 等待跳转或 Token 出现
+    6. 等待页面跳转
     """
-    username = settings.maozi_username
-    password = settings.maozi_password
+    if username is None:
+        username = settings.maozi_username
+    if password is None:
+        password = settings.maozi_password
 
     if not username or not password:
         print("[登录] MAOZI_USERNAME 或 MAOZI_PASSWORD 未配置，无法自动登录")
@@ -222,164 +219,106 @@ def auto_login(context: BrowserContext, max_retries: int = 3) -> bool:
     for attempt in range(max_retries):
         print(f"[登录] 第 {attempt + 1}/{max_retries} 次尝试...")
 
-        # 查找或创建登录页
-        login_page = _find_or_create_page(context, MAOZI_AUTH_URL)
-        if not login_page:
-            print("[登录] 无法打开登录页")
-            return False
-
         try:
-            _navigate_to_login(login_page)
-            time.sleep(3)
+            page.goto(MAOZI_AUTH_URL, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2000)
 
-            # 等待 SPA 渲染（轮询 bodyText 含"请按住滑块拖动"）
-            if not _wait_for_login_form(login_page, timeout=15):
-                print("[登录] 登录表单未出现")
+            # 等待SPA渲染
+            for _ in range(30):
+                body_text = page.evaluate("() => document.body?.innerText || ''")
+                if '请按住滑块拖动' in body_text or '请登录' in body_text:
+                    break
+                page.wait_for_timeout(300)
+
+            # 填写账号密码（使用 input[name] 精确选择器）
+            username_el = page.query_selector('input[name="username"]')
+            password_el = page.query_selector('input[name="password"]')
+
+            if username_el:
+                current_user = username_el.input_value() or ''
+                if username and current_user != username:
+                    username_el.click()
+                    page.wait_for_timeout(200)
+                    username_el.fill(username)
+            elif not username:
+                print("[登录] 用户名为空且未预填")
                 continue
 
-            time.sleep(1)
-
-            # 填写表单
-            _fill_login_form(login_page, username, password)
+            if password_el:
+                current_pass = password_el.input_value() or ''
+                if password and current_pass != password:
+                    password_el.click()
+                    page.wait_for_timeout(200)
+                    password_el.fill(password)
+            elif not password:
+                print("[登录] 密码为空且未预填")
+                continue
 
             # 勾选"记住账号"
-            _check_remember(login_page)
+            page.evaluate("""() => {
+                const cb = document.querySelector('input[type="checkbox"]');
+                if (cb && !cb.checked) cb.click();
+            }""")
 
             # 滑块验证
-            slider = SliderHandler(login_page)
-            if not slider.solve(max_retries=2):
-                print("[登录] 滑块验证失败")
+            slider = SliderHandler(page)
+            slider_ok = slider.solve(max_retries=2)
+            if not slider_ok:
+                print("[登录] 滑块验证结果未确认，检查是否已自动登录...")
+                page.wait_for_timeout(2000)
+                current_url = page.url
+                if '/auth/login' not in current_url:
+                    print("[登录] 滑块后已自动跳转，视为登录成功")
+                    return True
+                token_check = page.evaluate(
+                    """() => {
+                      const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
+                      return !!access.accessToken;
+                    }"""
+                )
+                if token_check:
+                    print("[登录] 滑块后Token已存在，视为登录成功")
+                    return True
                 continue
 
             # 点击登录按钮
-            _click_login_button(login_page)
-            time.sleep(2)
+            login_btn = page.query_selector('button:has-text("登录")')
+            if login_btn:
+                login_btn.click()
 
-            # 等待登录成功
-            if _wait_for_login_success(login_page, context, timeout=15):
-                print("[登录] 登录成功")
-                return True
-            else:
-                print("[登录] 未检测到登录成功信号")
+            # 等待页面跳转（轮询）
+            for check_i in range(20):
+                page.wait_for_timeout(1000)
+                current_url = page.url
+                if '/auth/login' not in current_url:
+                    print("[登录] 登录成功（URL已跳离登录页）")
+                    return True
+                token_check = page.evaluate(
+                    """() => {
+                      const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
+                      return !!access.accessToken;
+                    }"""
+                )
+                if token_check:
+                    print("[登录] 登录成功（Token已写入localStorage）")
+                    return True
+
+            # 检查登录结果
+            body = page.evaluate("() => document.body?.innerText?.slice(0, 500) || ''")
+            if '账号或密码错误' in body:
+                print("[登录] 账号或密码错误")
+                return False
+            if '验证通过' in body:
+                print("[登录] 仍在登录页，滑块已过但登录未跳转")
+                continue
+
+            print(f"[登录] 未成功，URL: {page.url}")
 
         except Exception as exc:
             print(f"[登录] 异常: {exc}")
-            continue
+            page.wait_for_timeout(2000)
 
     print("[登录] 所有重试均失败")
-    return False
-
-
-def _find_or_create_page(context: BrowserContext, url_hint: str) -> Page | None:
-    """在上下文中查找匹配URL的页面，找不到则新建"""
-    for page in context.pages:
-        try:
-            if "maozierp.com" in page.url:
-                return page
-        except Exception:
-            continue
-    try:
-        return context.new_page()
-    except Exception as exc:
-        print(f"[登录] 创建新页面失败: {exc}")
-        return None
-
-
-def _navigate_to_login(page: Page) -> None:
-    """导航到登录页"""
-    try:
-        page.goto(MAOZI_AUTH_URL, wait_until="domcontentloaded", timeout=30000)
-    except Exception:
-        pass
-
-
-def _wait_for_login_form(page: Page, timeout: int = 15) -> bool:
-    """等待登录表单渲染（检测"请按住滑块拖动"文字）"""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            body = page.evaluate("() => document.body.innerText")
-            if body and "请按住滑块拖动" in body:
-                return True
-        except Exception:
-            pass
-        time.sleep(1)
-    return False
-
-
-def _fill_login_form(page: Page, username: str, password: str) -> None:
-    """填写登录表单"""
-    try:
-        # 清空并填写用户名
-        inputs = page.query_selector_all("input")
-        if len(inputs) >= 2:
-            inputs[0].fill(username)
-            time.sleep(0.3)
-            inputs[1].fill(password)
-            time.sleep(0.3)
-    except Exception as exc:
-        print(f"[登录] 填写表单失败: {exc}")
-
-
-def _check_remember(page: Page) -> None:
-    """勾选"记住账号"复选框"""
-    try:
-        page.evaluate("""() => {
-            const checkboxes = document.querySelectorAll('input[type="checkbox"]');
-            for (const cb of checkboxes) {
-                if (!cb.checked) {
-                    cb.click();
-                }
-            }
-        }""")
-        time.sleep(0.2)
-    except Exception:
-        pass
-
-
-def _click_login_button(page: Page) -> None:
-    """点击登录按钮"""
-    try:
-        page.evaluate("""() => {
-            const buttons = document.querySelectorAll('button');
-            for (const btn of buttons) {
-                const text = (btn.innerText || '').trim();
-                if (text.includes('登录') || text.includes('登 录')) {
-                    btn.click();
-                    return;
-                }
-            }
-        }""")
-    except Exception:
-        pass
-
-
-def _wait_for_login_success(page: Page, context: BrowserContext, timeout: int = 15) -> bool:
-    """轮询等待登录成功：页面跳离登录页或 localStorage 出现 Token"""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            # 检查当前页面是否已离开登录页
-            if MAOZI_AUTH_URL not in page.url.lower():
-                return True
-        except Exception:
-            pass
-
-        # 检查任意毛子页面的 Token
-        for pg in context.pages:
-            try:
-                if "maozierp.com" in pg.url.lower():
-                    token = pg.evaluate("""() => {
-                        const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{}');
-                        return !!access.accessToken;
-                    }""")
-                    if token:
-                        return True
-            except Exception:
-                continue
-
-        time.sleep(1)
-
     return False
 
 
@@ -408,26 +347,29 @@ def handle_plugin_login_popup(context: BrowserContext, max_retries: int = 2) -> 
         if not login_button_uid:
             return False
 
-        before_pages = set(context.pages)
+        before_count = len(context.pages)
 
         # 点击"请登录"按钮
         _click_popup_button(target_page)
-        time.sleep(3)
+        target_page.wait_for_timeout(3000)
 
         # 检测是否有新登录页
-        new_pages = [p for p in context.pages if p not in before_pages]
+        new_pages = [p for p in context.pages if len(context.pages) > before_count]
         login_page = None
-        for p in new_pages:
+        if new_pages:
+            # 取最后一个（最新创建的页面）
+            login_page = context.pages[-1]
             try:
-                if MAOZI_AUTH_URL in p.url.lower():
-                    login_page = p
-                    break
+                if MAOZI_AUTH_URL in login_page.url.lower():
+                    pass  # 确认是登录页
+                else:
+                    login_page = None
             except Exception:
-                continue
+                login_page = None
 
         if login_page:
             print("[弹窗] 检测到新登录页，执行自动登录...")
-            success = auto_login(context)
+            success = auto_login(login_page)
             if success:
                 try:
                     login_page.close()
@@ -436,12 +378,12 @@ def handle_plugin_login_popup(context: BrowserContext, max_retries: int = 2) -> 
             return success
 
         # 等待弹窗消失
-        time.sleep(2)
+        target_page.wait_for_timeout(2000)
         if not _get_popup_button_uid(target_page):
             print("[弹窗] 弹窗已消失，视为登录成功")
             return True
 
-        time.sleep(2)
+        target_page.wait_for_timeout(2000)
 
     return False
 
@@ -527,7 +469,7 @@ def unified_login_recovery(context: BrowserContext, browser_client=None) -> bool
         try:
             if detect_login_expired(page):
                 print("[恢复] 检测到登录页，执行自动登录...")
-                if auto_login(context):
+                if auto_login(page):
                     print("[恢复] 方法2 成功")
                     return True
             if detect_captcha_present(page):
@@ -542,9 +484,18 @@ def unified_login_recovery(context: BrowserContext, browser_client=None) -> bool
 
     # 方法3: 主动打开登录页
     print("[恢复] 方法3: 主动登录...")
-    if auto_login(context):
-        print("[恢复] 方法3 成功")
-        return True
+    try:
+        login_page = context.new_page()
+        ok = auto_login(login_page)
+        if ok:
+            print("[恢复] 方法3 成功")
+            return True
+        try:
+            login_page.close()
+        except Exception:
+            pass
+    except Exception as exc:
+        print(f"[恢复] 方法3异常: {exc}")
 
     # 全部失败 → 飞书告警
     print("[恢复] 所有恢复方法均失败!")
