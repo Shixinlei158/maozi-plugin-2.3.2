@@ -134,8 +134,13 @@ def evaluate_selection_rule(
     product: dict[str, Any],
     seller_offer_count: int | None,
     rule: ProductSelectionRule = DEFAULT_SELECTION_RULE,
+    skip_offer_count: bool = False,
 ) -> ProductSelectionResult:
-    """对单个SKU执行合格商品筛选规则判定"""
+    """对单个SKU执行合格商品筛选规则判定。
+
+    参数：
+        skip_offer_count: 跳过跟卖人数检查（用于SKU3先筛阶段，尚未获取跟卖数据时）
+    """
     reasons: list[str] = []
 
     brand = normalize_text(metric.get("brand") or product.get("brand"))
@@ -148,7 +153,9 @@ def evaluate_selection_rule(
     rule.weight_g.check(metric.get("custom_weight_g"), "重量(g)", reasons)
     rule.create_days.check(metric.get("create_days"), "上架天数", reasons)
     rule.redemption_rate.check(metric.get("nullable_redemption_rate"), "退货取消率", reasons)
-    rule.seller_offer_count.check(seller_offer_count, "跟卖人数", reasons)
+
+    if not skip_offer_count:
+        rule.seller_offer_count.check(seller_offer_count, "跟卖人数", reasons)
 
     if rule.required_sales_schema:
         sales_schema = normalize_text(metric.get("sales_schema"))

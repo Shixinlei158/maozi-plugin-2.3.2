@@ -261,7 +261,16 @@ def run_seller_collection(limit: int = 0, stop_flag=None) -> dict[str, int]:
                             "raw": {"seller_home": it},
                         }
 
-                        # 获取跟卖人数（Ozon开放API，从ozon.ru同源请求）
+                        # 步骤1：SKU3先筛（跳过跟卖人数，避免无效API调用）
+                        result_step1 = evaluate_selection_rule(
+                            metric, product_snapshot, 0, skip_offer_count=True
+                        )
+                        if not result_step1.matched:
+                            stats["sku3_filtered"] = stats.get("sku3_filtered", 0) + 1
+                            print(f"  淘汰 sku={sku} reason={result_step1.summary[:80]}")
+                            continue
+
+                        # 步骤2：SKU3通过 → 获取跟卖人数 → 完整判定
                         offers = browser.fetch_seller_offers(sku)
                         seller_offer_count = len(offers) if isinstance(offers, list) else None
                         result_obj = evaluate_selection_rule(
