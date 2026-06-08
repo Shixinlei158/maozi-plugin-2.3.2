@@ -287,6 +287,15 @@ def run_seller_collection(limit: int = 0, stop_flag=None) -> dict[str, int]:
                             )
                             seller_qualified += 1
                             stats["products_qualified"] += 1
+                            # 合格SKU的跟卖列表写入seller_shops
+                            if isinstance(offers, list) and offers:
+                                for offer in offers:
+                                    o_url = offer.get("seller_home_url")
+                                    o_name = str(offer.get("seller_name") or "unknown")[:255]
+                                    if o_url:
+                                        if not o_url.startswith("http"):
+                                            o_url = "https://www.ozon.ru" + o_url
+                                        upsert_seller_shop(o_url, name=o_name, source_sku=sku, source_table="sku_products")
                             print(f"  合格 sku={sku} brand={metric.get('brand','?')} order30={metric.get('order_amount_30d','?')} rev30={metric.get('revenue_30d','?')}")
                         else:
                             print(f"  淘汰 sku={sku} reason={result_obj.summary[:80]}")
