@@ -186,6 +186,7 @@
 #### ozon_categories
 - `list_categories_by_level(level)`：按层级列出类目
 - `upsert_category()`：插入或更新单条类目
+- `bulk_upsert_categories_from_items(items)`：从榜单商品列表中提取类目ID，批量去重后写入 ozon_categories（采集过程中自动增长类目树）
 
 #### seed_pool_skus
 - `bulk_upsert_seed_pool()`：批量写入榜单种子（自动计算快照哈希去重）
@@ -251,13 +252,16 @@
 **执行流程：**
 ```
 查询到期卖家（新入库优先）
-  └── 打开卖家主页
+  └── 打开卖家主页（Ozon entrypoint API 翻页获取全部商品）
         ├── 品牌检测（前24条商品标题含拉丁字母）
         │     └── 全部有品牌 → 永久冻结
         ├── 价格预筛（20-1000 CNY）
         ├── 提取SKU列表
-        ├── 批量SKU3获取
-        ├── 合格商品判定
+        ├── 分批批量获取SKU3详情（全部SKU，非仅前60个）
+        ├── 两步筛选:
+        │     ├── 步骤1: SKU3先筛(skip_offer_count=True, 仅SKU3字段)
+        │     │     └── 不通过 → continue（省去跟卖API请求）
+        │     └── 步骤2: 通过 → fetch_seller_offers获取跟卖人数 → 完整判定
         └── 冻结策略:
               ├── 有合格SKU → 冻结1个月
               └── 无合格SKU → 冻结6个月

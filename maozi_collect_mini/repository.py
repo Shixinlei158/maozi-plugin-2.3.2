@@ -102,6 +102,51 @@ def upsert_category(
     )
 
 
+def bulk_upsert_categories_from_items(items: list[dict[str, Any]]) -> int:
+    """从榜单商品列表中提取类目ID，批量写入 ozon_categories（自增机制）
+
+    每页榜单数据都会携带 cate1_id/cate2_id/cate3_id，本函数提取去重后
+    批量 upsert 到类目树表，实现采集中类目的自动增长。
+    返回写入记录数。
+    """
+    from . import db as _db_module
+
+    if not items:
+        return 0
+
+    category_rows: list[dict[str, Any]] = []
+    seen_categories: set[int] = set()
+    for item in items:
+        for c_id, c_name_zh, c_name_en, c_parent, c_level in [
+            (item.get("cate1_id"), item.get("cate1") or "", item.get("category1") or "", 0, 1),
+            (item.get("cate2_id"), item.get("cate2") or "", item.get("category2") or "", item.get("cate1_id") or 0, 2),
+            (item.get("cate3_id"), item.get("cate3") or "", item.get("category3") or "", item.get("cate2_id") or 0, 3),
+        ]:
+            if c_id and int(c_id) not in seen_categories:
+                seen_categories.add(int(c_id))
+                category_rows.append({
+                    "category_id": int(c_id),
+                    "name_zh": c_name_zh or "",
+                    "name_en": c_name_en or "",
+                    "parent_id": int(c_parent) if c_parent else 0,
+                    "level": c_level,
+                })
+
+    if not category_rows:
+        return 0
+
+    return _db_module.execute_insert_many(
+        "INSERT INTO ozon_categories (category_id, name_zh, name_en, parent_id, level) "
+        "VALUES (%(category_id)s, %(name_zh)s, %(name_en)s, %(parent_id)s, %(level)s) "
+        "ON DUPLICATE KEY UPDATE "
+        "name_zh=IF(VALUES(name_zh)!='',VALUES(name_zh),name_zh), "
+        "name_en=IF(VALUES(name_en)!='',VALUES(name_en),name_en), "
+        "parent_id=IF(VALUES(parent_id)!=0,VALUES(parent_id),parent_id)",
+        category_rows,
+        batch_size=200,
+    )
+
+
 # ============================================================
 # seed_pool_skus
 # ============================================================

@@ -20,6 +20,7 @@ from typing import Any
 
 from .browser import BrowserClient
 from .repository import (
+    bulk_upsert_categories_from_items,
     bulk_upsert_seed_pool,
     query_key_from_filters,
     list_categories_by_level,
@@ -217,6 +218,11 @@ def run_ranking_collection(config: dict[str, Any], stop_flag=None) -> dict[str, 
                     for rank, item in enumerate(items):
                         item["page_no"] = page_no
                         item["page_rank"] = rank + 1
+
+                    # 类目自增：从榜单商品数据中提取类目ID，自动写入 ozon_categories
+                    cat_upserted = bulk_upsert_categories_from_items(items)
+                    if cat_upserted:
+                        print(f"    ozon_categories 自增: {cat_upserted} 条新类目")
 
                     # 种子预筛选 → 种子池
                     seed_rule = get_top_list_seed_rule()
