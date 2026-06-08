@@ -52,6 +52,7 @@ class BrowserClient:
         self._browser: Any = None
         self._context: Any = None
         self._maozi_page: Any = None
+        self._ozon_page: Any = None  # 缓存ozon.ru页面用于跟卖API同源请求
 
     def open_session(self) -> None:
         """打开浏览器会话"""
@@ -89,6 +90,7 @@ class BrowserClient:
         self._browser = None
         self._context = None
         self._maozi_page = None
+        self._ozon_page = None
 
     def get_maozi_page(self) -> Any:
         """获取或创建毛子ERP选品页面"""
@@ -120,6 +122,19 @@ class BrowserClient:
                     return
             except Exception:
                 continue
+
+    def _get_ozon_page(self) -> Any:
+        """获取或创建ozon.ru页面（用于同源请求跟卖API）"""
+        if self._ozon_page:
+            try:
+                self._ozon_page.title()
+                return self._ozon_page
+            except Exception:
+                self._ozon_page = None
+        page = self._context.new_page()
+        page.goto("https://www.ozon.ru", wait_until="domcontentloaded")
+        self._ozon_page = page
+        return page
 
     # ============================================================
     # 登录态检测与恢复
@@ -201,27 +216,55 @@ class BrowserClient:
     ) -> dict[str, Any]:
         """在毛子页面中调用榜单API，获取一页数据"""
         page = self.get_maozi_page()
-        api_params = dict(filters)
-        api_params["page"] = page_no
-        api_params["page_size"] = page_size
-
-        json_str = json.dumps(api_params, ensure_ascii=False)
+        filters_json = json.dumps(filters, ensure_ascii=False)
 
         result = page.evaluate(
             f"""
                 async () => {{
                     const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{{}}');
                     const token = access.accessToken || '';
+                    if (!token) {{
+                        return {{ok: false, error: 'TOKEN_MISSING'}};
+                    }}
                     try {{
-                        const r = await fetch('https://api.maozierp.com/api.selection.top/lists?{json_str}', {{
+                        const filters = {filters_json};
+                        const params = new URLSearchParams();
+                        for (const [key, value] of Object.entries(filters || {{}})) {{
+                            if (Array.isArray(value)) {{
+                                for (const item of value) {{
+                                    if (item != null && item !== '') {{
+                                        params.append(key + '[]', String(item));
+                                    }}
+                                }}
+                                continue;
+                            }}
+                            if (value != null && value !== '') {{
+                                params.set(key, String(value));
+                            }}
+                        }}
+                        params.set('page', String({page_no}));
+                        params.set('page_size', String({page_size}));
+                        const controller = new AbortController();
+                        const timer = setTimeout(() => controller.abort(), 20000);
+                        const r = await fetch('https://api.maozierp.com/api.selection.top/lists?' + params.toString(), {{
+                            method: 'GET',
+                            credentials: 'include',
+                            signal: controller.signal,
                             headers: {{
-                                'Authorization': `Bearer ${{token}}`,
+                                'Accept': 'application/json, text/plain, */*',
+                                'Authorization': 'Bearer ' + token,
                                 'Client': 'pc',
-                                'X-Client-Type': 'pc'
+                                'X-Client-Type': 'pc',
+                                'DNT': '1'
                             }}
                         }});
-                        const data = await r.json();
-                        return {{ok: r.ok, status: r.status, data: data}};
+                        clearTimeout(timer);
+                        const text = await r.text();
+                        let data = null;
+                        try {{
+                            data = JSON.parse(text);
+                        }} catch(e) {{}}
+                        return {{ok: r.ok, status: r.status, data: data, text: text}};
                     }} catch(e) {{
                         return {{ok: false, error: 'FETCH_ERROR: ' + e.message}};
                     }}
@@ -299,85 +342,222 @@ class BrowserClient:
     # 卖家主页产品抓取
     # ============================================================
     def fetch_seller_home_products(
-        self, seller_url: str, max_scrolls: int = 8, page_timeout: int = 120
+        self, seller_url: str, max_pages: int = 100, page_timeout: int = 120
     ) -> dict[str, Any]:
-        """打开卖家主页，滚动加载并抓取商品列表"""
-        page = self._context.new_page() if self._context else None
-        if not page:
-            return {"error": "no_browser_context"}
-
+        """通过Ozon entrypoint API拉取卖家主页全部商品（翻到最后一页为止）。
+        
+        参数：
+            seller_url: 卖家主页完整URL
+            max_pages: 安全上限（默认100页≈2000商品，正常卖家不会超过）
+            page_timeout: 单页超时秒数
+        
+        返回：
+            {"items": [{href, sku, title, price_text, price_amount, currency, image_url}, ...],
+             "source": "entrypoint_api", "pages_fetched": N}
+        """
         try:
-            page.goto(seller_url, wait_until="domcontentloaded", timeout=page_timeout * 1000)
-            time.sleep(3)
+            # 从缓存ozon页面导航到卖家主页（同源请求，视觉反馈）
+            page = self._get_ozon_page()
+            remaining = page_timeout * 1000
+            page.goto(seller_url, wait_until="domcontentloaded", timeout=min(remaining, 30000))
+            page.wait_for_timeout(300)
 
-            items = []
-            for scroll in range(max_scrolls):
-                current_items = page.evaluate("""
-                    () => {
-                        const tiles = document.querySelectorAll('[data-widget="searchResultsV2"], '
-                            + 'div[class*="tile"], div[class*="widget-search-result"]');
-                        const results = [];
-                        tiles.forEach(tile => {
-                            const link = tile.querySelector('a[href*="/product/"]');
-                            const img = tile.querySelector('img');
-                            const priceEl = tile.querySelector('[class*="price"], span');
-                            results.push({
-                                href: link ? link.getAttribute('href') : null,
-                                title: link ? link.textContent?.trim() : null,
-                                image_url: img ? img.getAttribute('src') : null,
-                                price_text: priceEl ? priceEl.textContent?.trim() : null,
-                            });
-                        });
-                        return results;
+            # 提取卖家路径（相对URL）
+            from urllib.parse import urlparse
+            parsed = urlparse(seller_url)
+            seller_path = parsed.path or "/"
+            if parsed.query:
+                seller_path += "?" + parsed.query
+
+            import json
+            all_items: list[dict[str, Any]] = []
+            seen_skus: set[str] = set()
+            pages_fetched = 0
+            next_path: str | None = seller_path
+
+            while next_path and pages_fetched < max_pages:
+                raw = page.evaluate(
+                    """
+                    async ({ sellerPath, timeoutMs }) => {
+                        const controller = new AbortController();
+                        const timer = setTimeout(() => controller.abort(), timeoutMs);
+                        try {
+                            const response = await fetch(
+                                `/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(sellerPath)}`,
+                                { credentials: "include", signal: controller.signal }
+                            );
+                            clearTimeout(timer);
+                            return { ok: response.ok, status: response.status, text: await response.text() };
+                        } catch (e) {
+                            return { ok: false, status: 0, text: String(e) };
+                        }
                     }
-                """)
-                for item in current_items:
-                    if item.get("href") and item["href"] not in {i["href"] for i in items}:
-                        items.append(item)
+                    """,
+                    {"sellerPath": next_path, "timeoutMs": 8000},
+                )
 
-                if scroll >= max_scrolls - 1:
+                if not raw.get("ok"):
+                    if pages_fetched == 0:
+                        return {"error": f"seller home api HTTP {raw.get('status')}", "items": []}
                     break
 
-                page.evaluate("window.scrollBy(0, window.innerHeight)")
-                time.sleep(2)
+                data = json.loads(raw["text"])
+                widget_states = data.get("widgetStates") or {}
 
-            return {"items": items, "source": "seller_home"}
+                # 解析商品tiles（tileGridDesktop-* widget）
+                grid_key = next((k for k in widget_states if k.startswith("tileGridDesktop-")), None)
+                if grid_key:
+                    grid_raw = widget_states[grid_key]
+                    if isinstance(grid_raw, str):
+                        grid_raw = json.loads(grid_raw)
+                    tiles = grid_raw.get("items") or []
+                    for tile in tiles:
+                        action = tile.get("action") or {}
+                        href = action.get("link")
+                        if not href:
+                            continue
+                        sku = str(tile.get("sku") or tile.get("id") or "")
+                        key = sku or href
+                        if key in seen_skus:
+                            continue
+                        seen_skus.add(key)
+                        # 提取title（来自mainState中的textAtom）
+                        title = None
+                        for block in tile.get("mainState") or []:
+                            if block.get("type") == "textAtom":
+                                title = ((block.get("textAtom") or {}).get("text") or "").strip() or None
+                                break
+                        # 提取price（来自mainState中的priceV2）
+                        price_text = None
+                        for block in tile.get("mainState") or []:
+                            if block.get("type") != "priceV2":
+                                continue
+                            parts = ((block.get("priceV2") or {}).get("price") or [])
+                            price_text = "".join((part.get("text") or "") for part in parts).strip() or None
+                            break
+                        # 提取图片
+                        image_url = None
+                        tile_image = tile.get("tileImage") or {}
+                        for img_item in tile_image.get("items") or []:
+                            img_link = (img_item.get("image") or {}).get("link")
+                            if img_link:
+                                image_url = img_link
+                                break
+                        # 提取角标（如 "Нет в наличии" 无库存标记）
+                        badge_text = None
+                        badge_v2 = tile_image.get("leftBottomBadgeV2")
+                        if isinstance(badge_v2, dict):
+                            badge_text = badge_v2.get("text")
+                        # 提取库存上限（multiButton → addToCart → quantityButton.maxItems）
+                        stock_max = None
+                        multi_button = tile.get("multiButton") or {}
+                        ozon_button = multi_button.get("ozonButton") or {}
+                        atc = ozon_button.get("addToCart") or {}
+                        qb = atc.get("quantityButton") or {}
+                        max_items = qb.get("maxItems")
+                        if isinstance(max_items, (int, float)):
+                            stock_max = int(max_items)
+                        # 提取品牌logo URL
+                        brand_logo_url = None
+                        brand_logo = tile.get("brandLogo")
+                        if isinstance(brand_logo, dict):
+                            logo = brand_logo.get("logo")
+                            if logo:
+                                brand_logo_url = logo
+                        # 价格数值
+                        price_amount = None
+                        currency = None
+                        if price_text:
+                            import re as _re
+                            cleaned = _re.sub(r"[^\d.,]", "", price_text.replace(",", "."))
+                            try:
+                                price_amount = float(cleaned)
+                            except ValueError:
+                                pass
+                            if "₽" in price_text:
+                                currency = "RUB"
+                        all_items.append({
+                            "href": href,
+                            "product_url": href,
+                            "sku": sku,
+                            "title": title,
+                            "price_text": price_text or "",
+                            "price_amount": price_amount,
+                            "currency": currency,
+                            "image_url": image_url,
+                            "stock_max": stock_max,
+                            "badge": badge_text,
+                            "brand_logo_url": brand_logo_url,
+                        })
+
+                # 翻页（infiniteVirtualPaginator-* widget中的nextPage）
+                next_path = data.get("nextPage")
+                if not next_path:
+                    pag_key = next((k for k in widget_states if k.startswith("infiniteVirtualPaginator-")), None)
+                    if pag_key:
+                        pag_raw = widget_states[pag_key]
+                        if isinstance(pag_raw, str):
+                            pag_raw = json.loads(pag_raw)
+                        if isinstance(pag_raw, dict):
+                            next_path = pag_raw.get("nextPage")
+                pages_fetched += 1
+                time.sleep(0.3)  # 页面间延迟
+
+            return {
+                "page_url": seller_url,
+                "page_title": page.title(),
+                "items": all_items,
+                "pages_fetched": pages_fetched,
+                "source": "entrypoint_api",
+            }
 
         except Exception as exc:
             return {"error": str(exc), "items": []}
-        finally:
-            try:
-                page.close()
-            except Exception:
-                pass
 
     def fetch_seller_offers(self, sku: str) -> list[dict[str, Any]]:
-        """获取SKU的跟卖卖家列表"""
-        page = self.get_maozi_page()
-        result = page.evaluate(
-            f"""
-                async () => {{
-                    const access = JSON.parse(localStorage.getItem('maozierp-core-access') || '{{}}');
-                    const token = access.accessToken || '';
-                    try {{
-                        const r = await fetch('https://api.maozierp.com/api.chrome/sellerOffers', {{
-                            method: 'POST',
-                            headers: {{
-                                'Authorization': `Bearer ${{token}}`,
-                                'Client': 'plugin',
-                                'Content-Type': 'application/json'
-                            }},
-                            body: JSON.stringify({{sku: '{sku}'}})
-                        }});
-                        return await r.json();
-                    }} catch(e) {{
-                        return [];
+        """获取SKU的跟卖卖家列表（Ozon开放API，从缓存ozon.ru页面同源请求）"""
+        try:
+            page = self._get_ozon_page()
+            result = page.evaluate(
+                f"""
+                    async (sku) => {{
+                        try {{
+                            const target = `/modal/otherOffersFromSellers?product_id=${{sku}}`;
+                            const url = `/api/entrypoint-api.bx/page/json/v2?url=${{encodeURIComponent(target)}}`;
+                            const controller = new AbortController();
+                            const timer = setTimeout(() => controller.abort(), 15000);
+                            const r = await fetch(url, {{
+                                credentials: 'include',
+                                signal: controller.signal
+                            }});
+                            clearTimeout(timer);
+                            if (!r.ok) {{
+                                return [];
+                            }}
+                            const data = await r.json();
+                            const ws = data?.widgetStates || {{}};
+                            const key = Object.keys(ws).find(k => k.startsWith('webSellerList-'));
+                            if (!key) return [];
+                            let raw = ws[key];
+                            if (typeof raw === 'string') raw = JSON.parse(raw);
+                            const sellers = raw?.sellers || [];
+                            return sellers.map(s => ({{
+                                seller_id: String(s.link || '').split('/seller/')[1]?.split('/')[0] || '',
+                                seller_name: s.name || '',
+                                seller_home_url: (s.link && !s.link.startsWith('http') ? 'https://www.ozon.ru' + s.link : s.link) || '',
+                                offer_sku: String(s.sku || ''),
+                            }}));
+                        }} catch(e) {{
+                            return [];
+                        }}
                     }}
-                }}
-            """,
-        )
-        if isinstance(result, dict) and result.get("data"):
-            return result["data"]
+                """,
+                sku,
+            )
+            if isinstance(result, list):
+                return result
+        except Exception:
+            pass
         return []
 
     def ping_cdp(self) -> dict[str, Any]:

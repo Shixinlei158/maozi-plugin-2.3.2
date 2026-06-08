@@ -18,7 +18,7 @@ import sys
 import threading
 import tkinter as tk
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from tkinter import Frame, Label, Button, Entry, ttk, messagebox, scrolledtext, BooleanVar, StringVar
 from typing import Any
 
@@ -155,9 +155,11 @@ class App:
                        tooltip="发货模式: FBS, FBP, rFBS")
         self._add_param(tab_ranking, 4, 1, "重量≤(g)", "weight_max", "5000", "str",
                        tooltip="商品重量最大值(克)")
-        self._add_param(tab_ranking, 5, 0, "上架起始", "create_date_from", "2025-04-01", "str",
+        gui_create_from = (datetime.now().date() - timedelta(days=201)).strftime("%Y-%m-%d")
+        gui_create_to = (datetime.now().date() - timedelta(days=1)).strftime("%Y-%m-%d")
+        self._add_param(tab_ranking, 5, 0, "上架起始", "create_date_from", gui_create_from, "str",
                        tooltip="上架起始日期 YYYY-MM-DD")
-        self._add_param(tab_ranking, 5, 1, "上架截止", "create_date_to", "", "str",
+        self._add_param(tab_ranking, 5, 1, "上架截止", "create_date_to", gui_create_to, "str",
                        tooltip="上架截止日期 YYYY-MM-DD")
 
         # Tab 2: 卖家配置
@@ -280,13 +282,16 @@ class App:
         except Exception as e:
             messagebox.showerror("失败", str(e))
 
+    # 日期字段永不做持久化覆盖（始终采用动态默认值）
+    _EPHEMERAL_KEYS = {"create_date_from", "create_date_to"}
+
     def _load_config(self):
         try:
             config = load_runtime_config()
             if "_mode" in config:
                 self._mode_var.set(config.pop("_mode"))
             for k, v in config.items():
-                if k in self._param_vars:
+                if k in self._param_vars and k not in self._EPHEMERAL_KEYS:
                     self._param_vars[k].set(v)
         except Exception:
             pass
@@ -311,7 +316,7 @@ class App:
                 old_stdout = sys.stdout
                 sys.stdout = _LogRedirector(self._log_queue)
                 try:
-                    run_pipeline()
+                    run_pipeline(stop_flag=self._stop_flag)
                 finally:
                     sys.stdout = old_stdout
             except Exception as exc:

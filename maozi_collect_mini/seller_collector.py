@@ -69,11 +69,12 @@ def _item_passes_price_filter(item: dict[str, Any]) -> bool:
     return True
 
 
-def run_seller_collection(limit: int = 0) -> dict[str, int]:
+def run_seller_collection(limit: int = 0, stop_flag=None) -> dict[str, int]:
     """执行卖家主页采集。
 
     参数:
         limit: 本轮最多处理卖家数，0=无限制
+        stop_flag: threading.Event 对象，用于外部停止采集
 
     返回:
         {"sellers_processed": N, "products_qualified": N, "branded_skip": N, "empty_skip": N, "errors": N}
@@ -98,6 +99,10 @@ def run_seller_collection(limit: int = 0) -> dict[str, int]:
             return stats
 
         while True:
+            # 检查停止信号
+            if stop_flag and stop_flag.is_set():
+                print("收到停止信号，终止卖家采集")
+                break
             # 每轮查询到期卖家
             batch_size = min(limit if limit > 0 else 10, 10)
             sellers = list_due_sellers(limit=batch_size)
@@ -106,18 +111,24 @@ def run_seller_collection(limit: int = 0) -> dict[str, int]:
                 break
 
             for seller in sellers:
+                # 检查停止信号
+                if stop_flag and stop_flag.is_set():
+                    print(f"卖家 {seller.get('name','?')}: 收到停止信号，终止卖家采集")
+                    break
                 seller_key = seller["seller_key"]
-                home_url = seller["home_url"]
+                home_url = seller["home_url"] or ""
+                if not home_url.startswith("http"):
+                    home_url = "https://www.ozon.ru" + home_url
                 name = seller.get("name") or "unknown"
                 source_sku = seller.get("source_sku")
                 source_table = seller.get("source_table")
 
-                print(f"\n--- 采集卖家: {name} ({home_url[:80]}...) ---")
+                print(f"\n--- 卖家 [{stats['sellers_processed']+1}]: {name} ({home_url[:80]}...) ---")
 
                 try:
-                    # 打开卖家主页，预取SKU
+                    # 通过Ozon entrypoint API拉取卖家主页全部商品（翻到最后一页）
                     result = browser.fetch_seller_home_products(
-                        home_url, max_scrolls=3, page_timeout=settings.seller_page_timeout_seconds
+                        home_url, page_timeout=settings.seller_page_timeout_seconds
                     )
 
                     if result.get("error"):
@@ -135,6 +146,8 @@ def run_seller_collection(limit: int = 0) -> dict[str, int]:
                         stats["sellers_processed"] += 1
                         continue
 
+                    print(f"  卖家主页获取 {len(items)} 条商品 (翻页{result.get('pages_fetched', '?')}次)")
+
                     # 品牌检测
                     branded_items = [{"title": it.get("title")} for it in items]
                     if seller_looks_branded(branded_items, sample_size=_BRANDED_SAMPLE_SIZE):
@@ -146,12 +159,15 @@ def run_seller_collection(limit: int = 0) -> dict[str, int]:
                         continue
 
                     # 价格预筛
+                    items_before_filter = len(items)
                     items = [it for it in items if _item_passes_price_filter(it)]
+                    if items_before_filter > len(items):
+                        print(f"  价格预筛: {len(items)}/{items_before_filter} 通过 (20-1000 CNY)")
 
-                    # 提取SKU列表并获取SKU3详情
+                    # 提取SKU列表（优先使用API返回的sku字段，兜底从URL解析）
                     skus = []
                     for it in items:
-                        sku = _extract_sku_from_url(it.get("href") or "")
+                        sku = str(it.get("sku") or _extract_sku_from_url(it.get("href") or "") or "")
                         if sku:
                             skus.append(sku)
                             it["sku"] = sku
@@ -164,32 +180,75 @@ def run_seller_collection(limit: int = 0) -> dict[str, int]:
                         stats["sellers_processed"] += 1
                         continue
 
-                    # 批量获取SKU3详情
+                    # 打印SKU列表
+                    print(f"  提取SKU列表 ({len(skus)}): {', '.join(skus[:30])}{'...' if len(skus) > 30 else ''}")
+
+                    # 分批获取SKU3详情（全部 SKU，每批60个）
+                    batch_size = settings.top_list_sku3_batch_size
+                    batch_concurrency = settings.top_list_sku3_batch_concurrency
+                    batch_delay = settings.top_list_sku3_batch_chunk_delay_ms
+                    total_batches = (len(skus) + batch_size - 1) // batch_size
+                    all_sku3_results: dict[str, Any] = {}
+                    sku3_batch_errors = 0
                     try:
-                        sku3_results = browser.fetch_sku3_batch(
-                            skus[:60],
-                            concurrency=5,
-                            chunk_delay_ms=500,
-                        )
+                        print(f"  批量获取SKU3: {len(skus)}个SKU (分{total_batches}批, 每批{batch_size}个, {batch_concurrency}并发)")
+                        for batch_idx in range(0, len(skus), batch_size):
+                            batch = skus[batch_idx:batch_idx + batch_size]
+                            batch_no = batch_idx // batch_size + 1
+                            try:
+                                batch_results = browser.fetch_sku3_batch(
+                                    batch,
+                                    concurrency=batch_concurrency,
+                                    chunk_delay_ms=batch_delay,
+                                )
+                                all_sku3_results.update(batch_results)
+                                success_in_batch = sum(1 for v in batch_results.values() if isinstance(v, dict) and "_error" not in v)
+                                fail_in_batch = len(batch) - success_in_batch
+                                print(f"  SKU3批次[{batch_no}/{total_batches}]: 成功{success_in_batch} 失败{fail_in_batch}")
+                            except Exception as batch_exc:
+                                print(f"  SKU3批次[{batch_no}/{total_batches}]异常: {batch_exc}")
+                                sku3_batch_errors += 1
+                                # 单批失败不中断，继续下一批
+                            # 批次间延迟（避免触发限流）
+                            if batch_idx + batch_size < len(skus) and batch_delay > 0:
+                                time.sleep(batch_delay / 1000.0)
                     except Exception as exc:
                         print(f"  SKU3批量获取失败: {exc}")
                         stats["errors"] += 1
                         stats["sellers_processed"] += 1
                         continue
 
+                    if not all_sku3_results:
+                        print(f"  SKU3全部失败，跳过该卖家")
+                        freeze_seller(seller_key, 6)
+                        mark_seller_collected(seller_key, 0)
+                        stats["errors"] += 1
+                        stats["sellers_processed"] += 1
+                        continue
+
                     seller_qualified = 0
+                    sku3_success = 0
+                    sku3_failed = 0
                     for it in items:
                         sku = it.get("sku")
                         if not sku:
                             continue
 
-                        sku3_response = sku3_results.get(sku)
+                        sku3_response = all_sku3_results.get(sku)
                         if not sku3_response or "_error" in sku3_response:
+                            sku3_failed += 1
+                            err_msg = ""
+                            if isinstance(sku3_response, dict):
+                                err_msg = sku3_response.get("_error", "")[:60]
+                            print(f"  SKU3失败 sku={sku} reason={err_msg}")
                             continue
+                        sku3_success += 1
 
                         try:
                             metric = parse_sku3_response(sku, sku3_response)
                         except Exception:
+                            sku3_failed += 1
+                            print(f"  SKU3解析失败 sku={sku}")
                             continue
 
                         product_snapshot = {
@@ -217,14 +276,20 @@ def run_seller_collection(limit: int = 0) -> dict[str, int]:
                             )
                             seller_qualified += 1
                             stats["products_qualified"] += 1
+                            print(f"  合格 sku={sku} brand={metric.get('brand','?')} order30={metric.get('order_amount_30d','?')} rev30={metric.get('revenue_30d','?')}")
+                        else:
+                            print(f"  淘汰 sku={sku} reason={result_obj.summary[:80]}")
+
+                    # SKU3总结
+                    print(f"  SKU3总结: 成功{sku3_success} 失败{sku3_failed}")
 
                     # 根据合格数决定冻结时长
                     if seller_qualified > 0:
                         freeze_seller(seller_key, 1)  # 有合格SKU，冻结1个月
-                        print(f"  达标{ seller_qualified}个SKU，冻结1个月")
+                        print(f"  卖家总结: 合格{ seller_qualified}/{len(skus)}SKU，冻结1个月")
                     else:
                         freeze_seller(seller_key, 6)  # 无合格SKU，冻结6个月
-                        print(f"  无达标SKU，冻结6个月")
+                        print(f"  卖家总结: 合格0/{len(skus)}SKU，冻结6个月")
 
                     mark_seller_collected(seller_key, seller_qualified)
                     stats["sellers_processed"] += 1

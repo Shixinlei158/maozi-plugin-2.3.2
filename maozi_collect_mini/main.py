@@ -28,8 +28,12 @@ def ensure_tables() -> None:
             print(f"[WARN] 建表失败: {exc}")
 
 
-def run_pipeline() -> None:
-    """运行采集流水线：榜单采集 → 卖家采集"""
+def run_pipeline(stop_flag=None) -> None:
+    """运行采集流水线：榜单采集 → 卖家采集
+
+    参数:
+        stop_flag: threading.Event 对象，用于外部停止采集
+    """
     config = load_runtime_config()
     if not config:
         print("ERROR: config.json 不存在，请先在GUI中暂存配置")
@@ -45,14 +49,24 @@ def run_pipeline() -> None:
     from .seller_collector import run_seller_collection
 
     while True:
+        # 检查停止信号
+        if stop_flag and stop_flag.is_set():
+            print("===== 收到停止信号，流水线终止 =====")
+            break
+
         try:
             if mode in ("ranking", "crawl-top-list-network", "multi-category-network"):
                 print("\n===== 阶段1: 榜单采集 =====")
-                ranking_stats = run_ranking_collection(config)
+                ranking_stats = run_ranking_collection(config, stop_flag=stop_flag)
                 print(f"[榜单采集结果] {ranking_stats}")
 
+            # 阶段间检查停止信号
+            if stop_flag and stop_flag.is_set():
+                print("===== 收到停止信号，跳过卖家采集 =====")
+                break
+
             print("\n===== 阶段2: 卖家主页采集 =====")
-            seller_stats = run_seller_collection(limit=0)
+            seller_stats = run_seller_collection(limit=0, stop_flag=stop_flag)
             print(f"[卖家采集结果] {seller_stats}")
 
         except Exception as exc:
@@ -61,6 +75,11 @@ def run_pipeline() -> None:
 
         if not forever:
             print("===== 采集完成 (非循环模式) =====")
+            break
+
+        # 检查停止信号再休眠
+        if stop_flag and stop_flag.is_set():
+            print("===== 收到停止信号，流水线终止 =====")
             break
 
         print(f"\n-- 循环休眠 {idle_seconds} 秒后继续... --")

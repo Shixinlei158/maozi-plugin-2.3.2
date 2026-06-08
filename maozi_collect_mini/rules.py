@@ -94,7 +94,6 @@ def get_top_list_seed_rule() -> ProductSelectionRule:
         price=RangeRule(),
         weight_g=RangeRule(maximum=Decimal("5000")),
         create_days=RangeRule(maximum=Decimal(str(settings.seed_create_days_max))),
-        redemption_rate=RangeRule(maximum=Decimal("5")),
         seller_offer_count=RangeRule(maximum=Decimal("50")),
         required_sales_schema="FBS",
     )
@@ -200,6 +199,10 @@ def evaluate_top_list_prefilter(
                 create_days = None
     if create_days is not None:
         rule.create_days.check(create_days, "上架天数", reasons)
+
+    # blocked_by_seller=true 表示该商品任何人都不可跟卖 → 直接淘汰
+    if item.get("blocked_by_seller") in (True, "true", 1, "1"):
+        reasons.append("卖家已屏蔽，不可跟卖")
 
     if rule.required_sales_schema:
         sales_schema = normalize_text(item.get("sales_schema"))
