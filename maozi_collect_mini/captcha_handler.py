@@ -401,7 +401,7 @@ def handle_plugin_login_popup(context: BrowserContext, max_retries: int = 2) -> 
 
         target_page = _find_plugin_popup_page(context)
         if not target_page:
-            print("[弹窗] 未检测到"请登录"按钮")
+            print('[弹窗] 未检测到"请登录"按钮')
             return False
 
         login_button_uid = _get_popup_button_uid(target_page)
