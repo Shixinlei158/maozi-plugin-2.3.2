@@ -92,6 +92,45 @@ class BrowserClient:
         self._maozi_page = None
         self._ozon_page = None
 
+    def _close_page_safe(self, page: Any) -> None:
+        """安全关闭页面，忽略所有异常"""
+        try:
+            page.close()
+        except Exception:
+            pass
+
+    def _cleanup_excess_pages(self) -> int:
+        """当页面数超过阈值时，关闭非核心页面释放内存。
+        
+        仅保留最近使用的 maozi_page 和 ozon_page，其余全部关闭。
+        返回关闭的页面数。
+        """
+        if not self._context:
+            return 0
+        try:
+            all_pages = list(self._context.pages)
+        except Exception:
+            return 0
+        if len(all_pages) <= 10:
+            return 0
+        # 保留 maozi_page + ozon_page（如果存活），其余全部关闭
+        keep = set()
+        for p in (self._maozi_page, self._ozon_page):
+            if p is None:
+                continue
+            try:
+                p.url  # 探活
+                keep.add(p)
+            except Exception:
+                pass
+        closed = 0
+        for page in all_pages:
+            if page in keep:
+                continue
+            self._close_page_safe(page)
+            closed += 1
+        return closed
+
     def get_maozi_page(self) -> Any:
         """获取或创建毛子ERP选品页面"""
         if self._maozi_page:
@@ -99,12 +138,14 @@ class BrowserClient:
                 self._maozi_page.title()
                 return self._maozi_page
             except Exception:
+                self._close_page_safe(self._maozi_page)
                 self._maozi_page = None
 
         self._find_maozi_page()
         if self._maozi_page:
             return self._maozi_page
 
+        self._cleanup_excess_pages()
         page = self._context.new_page()
         page.goto(MAOZI_SELECTION_URL, wait_until="domcontentloaded")
         self._maozi_page = page
@@ -130,7 +171,9 @@ class BrowserClient:
                 self._ozon_page.title()
                 return self._ozon_page
             except Exception:
+                self._close_page_safe(self._ozon_page)
                 self._ozon_page = None
+        self._cleanup_excess_pages()
         page = self._context.new_page()
         page.goto("https://www.ozon.ru", wait_until="domcontentloaded")
         self._ozon_page = page

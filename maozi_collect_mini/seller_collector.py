@@ -305,6 +305,9 @@ def run_seller_collection(limit: int = 0, stop_flag=None) -> dict[str, int]:
                     mark_seller_collected(seller_key, seller_qualified)
                     stats["sellers_processed"] += 1
 
+                    # 周期性清理多余页面（>10页时关闭非核心页面，防止内存溢出）
+                    browser._cleanup_excess_pages()
+
                     # 每处理一个卖家检查认证
                     browser.ensure_authenticated(max_retries=1)
 
