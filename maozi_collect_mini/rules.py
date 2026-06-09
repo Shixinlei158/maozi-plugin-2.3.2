@@ -16,27 +16,12 @@ from typing import Any
 
 from .config import settings
 
-UNBRANDED_VALUES = {
+# 品牌白名单：只有这些值才被认为是"无品牌"并允许进入 sku_products。
+# 不在白名单中的品牌值一律拒绝（白名单制度，而非黑名单排除）。
+# 在白名单中的品牌，仍需通过标题拉丁字母兜底检测（见 _title_has_latin_chars）。
+ALLOWED_BRAND_NAMES = {
     "", "无品牌", "未填写品牌", "无", "none", "no brand",
     "нет бренда", "без бренда",
-}
-
-# 已知西里尔字母品牌名黑名单。
-# 西里尔字母无法像拉丁字母那样通过字符类型检测品牌（俄罗斯商品标题天然全是西里尔字母），
-# 因此需要维护一个已知品牌名集合，在品牌字段为空的兜底检测中匹配标题。
-# 注意: "без бренда"（无品牌）不在此列表中，它在 UNBRANDED_VALUES 中。
-CYRILLIC_BRAND_NAMES = {
-    "авз",
-    "бравекто",
-    "грандмастер",
-    "grand master",
-    "лева",
-    "leva",
-    "лео",
-    "leo",
-    "лысьва",
-    "пласт-м",
-    "plast-m",
 }
 
 RUB_CURRENCY_VALUES = {"rub", "rur", "₽", "руб"}
@@ -129,28 +114,6 @@ def _title_has_latin_chars(title: str, min_consecutive: int = 2) -> bool:
     return bool(re.search(r"[a-zA-Z]{" + str(min_consecutive) + r",}", title))
 
 
-def _title_contains_cyrillic_brand(title: str) -> str | None:
-    """检测标题是否包含已知的西里尔/俄语品牌名。
-
-    返回匹配到的品牌名（小写），未匹配返回 None。
-    用于品牌字段为空的兜底检测——西里尔字母无法通过字符类型检测品牌。
-    """
-    if not title:
-        return None
-    title_lower = title.lower()
-    # 按长度降序排列，优先匹配长品牌名（如 "plast-m" > "m"）
-    for brand_name in sorted(CYRILLIC_BRAND_NAMES, key=len, reverse=True):
-        if brand_name in title_lower:
-            # 单词边界检测：品牌名前后必须是空白/标点/字符串边界
-            idx = title_lower.find(brand_name)
-            before_ok = idx == 0 or not title_lower[idx - 1].isalpha()
-            after_ok = (idx + len(brand_name) == len(title_lower)
-                        or not title_lower[idx + len(brand_name)].isalpha())
-            if before_ok and after_ok:
-                return brand_name
-    return None
-
-
 def normalize_text(value: Any) -> str:
     if value is None:
         return ""
@@ -197,18 +160,14 @@ def evaluate_selection_rule(
 
     brand = normalize_text(metric.get("brand") or product.get("brand"))
     if rule.require_unbranded:
-        if brand not in UNBRANDED_VALUES:
-            reasons.append(f"品牌不是无品牌({metric.get('brand') or product.get('brand')})")
+        # 白名单制度：只有 ALLOWED_BRAND_NAMES 中的值才放行，其余一律拒绝
+        if brand not in ALLOWED_BRAND_NAMES:
+            reasons.append(f"品牌不在白名单({metric.get('brand') or product.get('brand')})")
         else:
-            # 兜底检测1：品牌字段为空/无品牌，但标题含连续拉丁字母 → 疑似品牌，拒绝
+            # 兜底检测：品牌字段在白名单但标题含连续拉丁字母 → API 数据不可信，拒绝
             title = normalize_text(product.get("title") or "")
             if _title_has_latin_chars(title):
                 reasons.append(f"品牌字段为'{brand}'但标题含拉丁字符(疑似品牌, title={title[:40]}...)")
-            else:
-                # 兜底检测2：品牌字段为空/无品牌，但标题含已知西里尔品牌名 → 拒绝
-                matched_cyrillic = _title_contains_cyrillic_brand(title)
-                if matched_cyrillic:
-                    reasons.append(f"品牌字段为'{brand}'但标题含西里尔品牌名'{matched_cyrillic}'(title={title[:40]}...)")
 
     rule.sold_count.check(metric.get("sold_count"), "月销量", reasons)
     price_cny = product_price_cny(product)
@@ -243,8 +202,8 @@ def evaluate_top_list_prefilter(
     reasons: list[str] = []
 
     brand = normalize_text(item.get("brand"))
-    if rule.require_unbranded and brand not in UNBRANDED_VALUES:
-        reasons.append(f"品牌不是无品牌({item.get('brand')})")
+    if rule.require_unbranded and brand not in ALLOWED_BRAND_NAMES:
+        reasons.append(f"品牌不在白名单({item.get('brand')})")
 
     rule.sold_count.check(item.get("sold_count"), "月销量", reasons)
     avg_price_cny = price_to_cny(item.get("avg_price"), "RUB")
