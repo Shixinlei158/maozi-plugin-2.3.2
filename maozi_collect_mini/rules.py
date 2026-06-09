@@ -99,6 +99,18 @@ def get_top_list_seed_rule() -> ProductSelectionRule:
     )
 
 
+def _title_has_latin_chars(title: str, min_consecutive: int = 2) -> bool:
+    """检测标题中是否含有连续拉丁字母（疑似品牌名）。
+
+    SKU3 API 的品牌字段经常返回 null/空，本函数用标题做兜底检测。
+    要求至少 min_consecutive 个连续拉丁字母，避免单字母噪音。
+    """
+    if not title:
+        return False
+    import re
+    return bool(re.search(r"[a-zA-Z]{" + str(min_consecutive) + r",}", title))
+
+
 def normalize_text(value: Any) -> str:
     if value is None:
         return ""
@@ -144,8 +156,14 @@ def evaluate_selection_rule(
     reasons: list[str] = []
 
     brand = normalize_text(metric.get("brand") or product.get("brand"))
-    if rule.require_unbranded and brand not in UNBRANDED_VALUES:
-        reasons.append(f"品牌不是无品牌({metric.get('brand') or product.get('brand')})")
+    if rule.require_unbranded:
+        if brand not in UNBRANDED_VALUES:
+            reasons.append(f"品牌不是无品牌({metric.get('brand') or product.get('brand')})")
+        else:
+            # 兜底检测：品牌字段为空/无品牌，但标题含连续拉丁字母 → 疑似品牌，拒绝
+            title = normalize_text(product.get("title") or "")
+            if _title_has_latin_chars(title):
+                reasons.append(f"品牌字段为'{brand}'但标题含拉丁字符(疑似品牌, title={title[:40]}...)")
 
     rule.sold_count.check(metric.get("sold_count"), "月销量", reasons)
     price_cny = product_price_cny(product)
