@@ -26,6 +26,8 @@ from .repository import (
     list_categories_by_level,
     upsert_seller_shop,
     mark_seed_status,
+    get_checkpoint,
+    upsert_checkpoint,
 )
 from .rules import (
     evaluate_top_list_prefilter,
@@ -76,25 +78,28 @@ def _build_base_filters(config: dict[str, Any]) -> dict[str, Any]:
     return filters
 
 
-def run_ranking_collection(config: dict[str, Any], stop_flag=None) -> dict[str, int]:
+def run_ranking_collection(config: dict[str, Any], stop_flag=None, resume: bool = False) -> dict[str, int]:
     """执行榜单采集。
 
     参数:
         config: GUI配置字典，包含 category_level, page_from, page_to, 各类目/过滤参数等
         stop_flag: threading.Event 对象，用于外部停止采集
+        resume: 是否启用断点续采（True=跳过已完成类目，从断点页继续）
 
     返回:
-        {"seeds_collected": N, "sellers_recorded": N, "pages_fetched": N, "errors": N}
+        {"seeds_collected": N, "sellers_recorded": N, "pages_fetched": N, "errors": N,
+         "categories_skipped": N, "categories_completed": N}
     """
     category_level = int(config.get("category_level", 1))
     page_from = int(config.get("page_from", 1))
     page_to = int(config.get("page_to", 100))
     main_type = config.get("main_type", "hot")
 
-    print(f"===== 开始榜单采集: type={main_type}, level={category_level}, pages={page_from}-{page_to} =====")
+    print(f"===== 开始榜单采集: type={main_type}, level={category_level}, pages={page_from}-{page_to}, resume={resume} =====")
 
     browser = BrowserClient()
-    stats = {"seeds_collected": 0, "sellers_recorded": 0, "pages_fetched": 0, "errors": 0}
+    stats = {"seeds_collected": 0, "sellers_recorded": 0, "pages_fetched": 0, "errors": 0,
+             "categories_skipped": 0, "categories_completed": 0}
 
     try:
         browser.open_session()
@@ -175,7 +180,35 @@ def run_ranking_collection(config: dict[str, Any], stop_flag=None) -> dict[str, 
 
             query_key = query_key_from_filters(filters)
 
-            for page_no in range(page_from, page_to + 1):
+            # --- 断点续采：检查该类目是否已完成或需要续采 ---
+            current_page_from = page_from
+            if resume:
+                checkpoint = get_checkpoint(query_key)
+                if checkpoint and checkpoint.get("status") == "completed":
+                    print(f"  断点续采: 类目 {cat_label} 已完成，跳过")
+                    stats["categories_skipped"] += 1
+                    continue
+                if checkpoint and checkpoint.get("status") == "in_progress":
+                    last_page = int(checkpoint.get("last_page_completed", 0))
+                    if last_page >= page_to:
+                        # 所有页已完成，补标记为completed
+                        print(f"  断点续采: 类目 {cat_label} 所有页已完成(last={last_page})，补标记completed")
+                        upsert_checkpoint(query_key, cat_label, last_page, page_to, 0, "completed")
+                        stats["categories_skipped"] += 1
+                        continue
+                    if last_page >= page_from:
+                        current_page_from = last_page + 1
+                        print(f"  断点续采: 类目 {cat_label} 从第 {current_page_from} 页续采 (已完成 1-{last_page})")
+                    else:
+                        # checkpoint记录的页数比page_from小（用户改了起始页），从page_from开始
+                        print(f"  断点续采: 类目 {cat_label} 从第 {current_page_from} 页开始 (断点记录={last_page}, 配置from={page_from})")
+
+            # 记录当前类目已开始
+            if resume:
+                upsert_checkpoint(query_key, cat_label, page_from - 1, page_to, 0, "in_progress")
+
+            category_items_collected = 0
+            for page_no in range(current_page_from, page_to + 1):
                 # 检查停止信号
                 if stop_flag and stop_flag.is_set():
                     print(f"page {page_no}/{cat_label}: 收到停止信号，跳过剩余页")
@@ -292,6 +325,7 @@ def run_ranking_collection(config: dict[str, Any], stop_flag=None) -> dict[str, 
                             saved = 0
 
                         stats["sellers_recorded"] += sellers_recorded
+                        category_items_collected += (saved or len(qualified_seeds))
                         print(f"    预筛总结: 通过{len(seed_items)}/{len(items)}, 跟卖合格{len(qualified_seeds)}(超标{offers_rejected}), 种子入库{saved or len(qualified_seeds)}")
                         print(f"    卖家写入: {sellers_recorded}个")
                     else:
@@ -307,10 +341,23 @@ def run_ranking_collection(config: dict[str, Any], stop_flag=None) -> dict[str, 
 
                     time.sleep(1)  # 页面间延迟
 
+                    # 断点续采：每完成一页保存一次进度
+                    if resume:
+                        upsert_checkpoint(query_key, cat_label, page_no, page_to, category_items_collected, "in_progress")
+
                 except Exception as exc:
                     print(f"page {page_no}: 采集异常: {exc}")
                     stats["errors"] += 1
+                    # 异常也保存断点，下次从此页重试
+                    if resume:
+                        upsert_checkpoint(query_key, cat_label, page_no - 1, page_to, category_items_collected, "in_progress")
                     continue
+
+            # 该类目所有页采集完成，标记为 completed
+            if resume:
+                upsert_checkpoint(query_key, cat_label, page_to, page_to, category_items_collected, "completed")
+                stats["categories_completed"] += 1
+                print(f"  断点续采: 类目 {cat_label} 已完成，进度已保存")
 
     except Exception as exc:
         print(f"榜单采集全局异常: {exc}")
@@ -323,6 +370,8 @@ def run_ranking_collection(config: dict[str, Any], stop_flag=None) -> dict[str, 
         f"种子={stats['seeds_collected']}, "
         f"卖家记录={stats['sellers_recorded']}, "
         f"页数={stats['pages_fetched']}, "
+        f"跳过类目={stats['categories_skipped']}, "
+        f"完成类目={stats['categories_completed']}, "
         f"错误={stats['errors']} ====="
     )
     return stats

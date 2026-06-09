@@ -217,14 +217,17 @@
 
 **执行流程：**
 ```
-类目迭代(0/1/2/3级)
-  └── 页面迭代(page_from → page_to, 每页50条)
-        ├── 榜单API查询
-        ├── 种子预筛选（Seed Rule）
-        ├── 合格 → 写入 seed_pool_skus
-        ├── 批量SKU3获取（60条/批, 5并发）
-        ├── 合格商品判定（Selection Rule）
-        └── 合格 → 写入 sku_products + 发现卖家写入 seller_shops
+断点检查(如启用resume) → 跳过已完成类目
+  └── 类目迭代(0/1/2/3级)
+        └── 页面迭代(page_from → page_to, 每页50条)
+              ├── 榜单API查询
+              ├── 类目自增：提取cate1_id/cate2_id/cate3_id → 写入 ozon_categories
+              ├── 种子预筛选（Seed Rule）
+              ├── 合格 → 写入 seed_pool_skus
+              ├── 批量SKU3获取（60条/批, 5并发）
+              ├── 合格商品判定（Selection Rule）
+              ├── 合格 → 写入 sku_products + 发现卖家写入 seller_shops
+              └── 每页完成 → 保存断点到 collection_checkpoint
 ```
 
 **类目层级说明：**

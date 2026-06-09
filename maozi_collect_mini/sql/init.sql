@@ -187,6 +187,23 @@ CREATE TABLE IF NOT EXISTS `sku_products` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='合格SKU产品表';
 
 -- ============================================================
+-- 5. 采集断点表 (v2.3.2 新增，断点续采)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS `collection_checkpoint` (
+    `id`              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    `query_key`       CHAR(40)        NOT NULL COMMENT '过滤条件指纹(含类目ID)',
+    `category_label`  VARCHAR(255)    NOT NULL COMMENT '类目标签(中文名或all)',
+    `last_page_completed` INT         NOT NULL DEFAULT 0 COMMENT '最后完成的页码',
+    `total_pages_target`  INT         NOT NULL DEFAULT 0 COMMENT '目标总页数',
+    `items_collected` INT             NOT NULL DEFAULT 0 COMMENT '该类目已采集的种子数',
+    `status`          VARCHAR(32)     NOT NULL DEFAULT 'in_progress' COMMENT 'in_progress/completed',
+    `first_seen_at`   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at`      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_query_key` (`query_key`),
+    KEY `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='采集断点进度表';
+
+-- ============================================================
 -- 迁移：增量添加缺失列（幂等，重复执行安全）
 -- ============================================================
 

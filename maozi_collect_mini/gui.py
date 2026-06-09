@@ -161,6 +161,8 @@ class App:
                        tooltip="上架起始日期 YYYY-MM-DD")
         self._add_param(tab_ranking, 5, 1, "上架截止", "create_date_to", gui_create_to, "str",
                        tooltip="上架截止日期 YYYY-MM-DD")
+        self._add_param(tab_ranking, 6, 0, "断点续采", "resume_from_checkpoint", False, "bool",
+                       tooltip="勾选后跳过已完成类目，从上次中断位置继续采集。取消勾选则全新开始")
 
         # Tab 2: 卖家配置
         self._add_param(tab_seller, 0, 0, "每轮处理上限", "seller_limit", "0", "int", min_val=0, max_val=10000,
@@ -212,6 +214,13 @@ class App:
             command=self._clear_log, relief="flat",
         )
         self._clear_btn.pack(side="left")
+
+        self._reset_checkpoint_btn = Button(
+            btn_frame, text="清除断点", bg="#e67e22", fg="white",
+            font=("Microsoft YaHei", 8), width=8, pady=3,
+            command=self._clear_checkpoints, relief="flat",
+        )
+        self._reset_checkpoint_btn.pack(side="left", padx=(6, 0))
 
         # 右侧日志区
         log_frame = Frame(main_frame, bg="#ffffff", padx=6, pady=4, relief="ridge", bd=1)
@@ -420,6 +429,18 @@ class App:
             self._log_area.configure(state="disabled")
         except Exception:
             pass
+
+    def _clear_checkpoints(self):
+        """清除所有断点记录"""
+        if not messagebox.askyesno("确认", "确定要清除所有断点记录吗？\n下次采集将从头开始。"):
+            return
+        try:
+            from .repository import clear_all_checkpoints
+            count = clear_all_checkpoints()
+            self._append_log(f">>> 已清除 {count} 条断点记录\n")
+            messagebox.showinfo("成功", f"已清除 {count} 条断点记录")
+        except Exception as e:
+            messagebox.showerror("失败", str(e))
 
 
 class _LogRedirector:

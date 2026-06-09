@@ -482,3 +482,51 @@ def count_seed_pool() -> int:
 def count_seller_shops() -> int:
     row = db.fetch_one("SELECT COUNT(*) AS cnt FROM seller_shops")
     return row["cnt"] if row else 0
+
+
+# ============================================================
+# collection_checkpoint（断点续采）
+# ============================================================
+def get_checkpoint(query_key: str) -> dict[str, Any] | None:
+    """读取指定 query_key 的采集断点"""
+    return db.fetch_one(
+        "SELECT * FROM collection_checkpoint WHERE query_key=%(qk)s",
+        {"qk": query_key},
+    )
+
+
+def upsert_checkpoint(
+    query_key: str,
+    category_label: str = "",
+    last_page_completed: int = 0,
+    total_pages_target: int = 0,
+    items_collected: int = 0,
+    status: str = "in_progress",
+) -> int:
+    """写入或更新采集断点"""
+    return db.execute(
+        """
+        INSERT INTO collection_checkpoint
+          (query_key, category_label, last_page_completed, total_pages_target,
+           items_collected, status)
+        VALUES
+          (%(qk)s, %(label)s, %(page)s, %(total)s, %(items)s, %(status)s)
+        ON DUPLICATE KEY UPDATE
+          last_page_completed=VALUES(last_page_completed),
+          items_collected=VALUES(items_collected),
+          status=VALUES(status)
+        """,
+        {
+            "qk": query_key,
+            "label": category_label[:255],
+            "page": last_page_completed,
+            "total": total_pages_target,
+            "items": items_collected,
+            "status": status,
+        },
+    )
+
+
+def clear_all_checkpoints() -> int:
+    """清除所有采集断点（全新开始）"""
+    return db.execute("DELETE FROM collection_checkpoint", {})

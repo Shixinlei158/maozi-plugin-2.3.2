@@ -17,6 +17,15 @@ from .db import run_sql_file
 from .config import ROOT_DIR
 
 
+def _get_bool(raw: dict, key: str, default: bool = False) -> bool:
+    val = raw.get(key, default)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in {"1", "true", "yes"}
+    return bool(val)
+
+
 def ensure_tables() -> None:
     """确保数据库表存在"""
     init_sql = ROOT_DIR / "sql" / "init.sql"
@@ -44,6 +53,7 @@ def run_pipeline(stop_flag=None) -> None:
     mode = config.get("_mode", "ranking")
     forever = config.get("forever", False)
     idle_seconds = int(config.get("idle_sleep_seconds", 300))
+    resume = _get_bool(config, "resume_from_checkpoint", False)
 
     from .ranking_collector import run_ranking_collection
     from .seller_collector import run_seller_collection
@@ -57,7 +67,7 @@ def run_pipeline(stop_flag=None) -> None:
         try:
             if mode in ("ranking", "crawl-top-list-network", "multi-category-network"):
                 print("\n===== 阶段1: 榜单采集 =====")
-                ranking_stats = run_ranking_collection(config, stop_flag=stop_flag)
+                ranking_stats = run_ranking_collection(config, stop_flag=stop_flag, resume=resume)
                 print(f"[榜单采集结果] {ranking_stats}")
 
             # 阶段间检查停止信号
