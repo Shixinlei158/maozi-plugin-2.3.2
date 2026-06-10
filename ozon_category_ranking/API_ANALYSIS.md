@@ -381,20 +381,23 @@ URL 示例：
 
 ### 6.1 新表 `ozon_category_urls`
 
+> **已建表并导入数据（2026-06-10）:** 该表已创建在 `ozon_selection` 数据库中。
+> - 一级类目：29 个
+> - 二级类目：307 个
+> - 三级类目：1989 个
+> - 总计：2349 条记录
+
 ```sql
 CREATE TABLE IF NOT EXISTS ozon_category_urls (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     category_id BIGINT NOT NULL COMMENT 'Ozon类目ID',
     parent_id BIGINT NOT NULL DEFAULT 0 COMMENT '父级类目ID，0=顶级',
     level TINYINT NOT NULL COMMENT '层级: 1=一级, 2=二级, 3=三级',
-    name_zh VARCHAR(255) NOT NULL DEFAULT '' COMMENT '类目中文名',
     name_ru VARCHAR(255) NOT NULL DEFAULT '' COMMENT '类目俄语名',
     slug VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'URL slug部分',
     url VARCHAR(512) NOT NULL DEFAULT '' COMMENT '完整相对URL /category/{slug}-{id}/',
-    has_children TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否有子类目',
-    child_count INT NOT NULL DEFAULT 0 COMMENT '子类目数量',
     icon VARCHAR(512) NOT NULL DEFAULT '' COMMENT '类目图标URL',
-    sort_order INT NOT NULL DEFAULT 0 COMMENT '排序序号',
+    image VARCHAR(512) NOT NULL DEFAULT '' COMMENT '类目图片URL',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_category_id (category_id),
