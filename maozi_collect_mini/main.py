@@ -38,7 +38,7 @@ def ensure_tables() -> None:
 
 
 def run_pipeline(stop_flag=None) -> None:
-    """运行采集流水线：榜单采集 → 卖家采集
+    """运行采集流水线：榜单采集/类目页采集 → 卖家采集
 
     参数:
         stop_flag: threading.Event 对象，用于外部停止采集
@@ -57,6 +57,7 @@ def run_pipeline(stop_flag=None) -> None:
 
     from .ranking_collector import run_ranking_collection
     from .seller_collector import run_seller_collection
+    from .category_page_collector import run_category_page_collection
 
     while True:
         # 检查停止信号
@@ -69,6 +70,10 @@ def run_pipeline(stop_flag=None) -> None:
                 print("\n===== 阶段1: 榜单采集 =====")
                 ranking_stats = run_ranking_collection(config, stop_flag=stop_flag, resume=resume)
                 print(f"[榜单采集结果] {ranking_stats}")
+            elif mode == "category_page":
+                print("\n===== 阶段1: 类目页采集 =====")
+                cp_stats = run_category_page_collection(config, stop_flag=stop_flag, resume=resume)
+                print(f"[类目页采集结果] {cp_stats}")
 
             # 阶段间检查停止信号
             if stop_flag and stop_flag.is_set():

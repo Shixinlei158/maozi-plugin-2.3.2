@@ -114,6 +114,7 @@ class App:
         modes = [
             ("榜单采集", "ranking"),
             ("卖家主页采集", "seller"),
+            ("类目页采集", "category_page"),
         ]
         for idx, (text, value) in enumerate(modes):
             ttk.Radiobutton(
@@ -127,10 +128,12 @@ class App:
 
         tab_ranking = Frame(self._notebook, bg="#ffffff", padx=6, pady=6)
         tab_seller = Frame(self._notebook, bg="#ffffff", padx=6, pady=6)
+        tab_category = Frame(self._notebook, bg="#ffffff", padx=6, pady=6)
         tab_loop = Frame(self._notebook, bg="#ffffff", padx=6, pady=6)
 
         self._notebook.add(tab_ranking, text="榜单配置")
         self._notebook.add(tab_seller, text="卖家配置")
+        self._notebook.add(tab_category, text="类目页配置")
         self._notebook.add(tab_loop, text="循环控制")
 
         # Tab 1: 榜单配置
@@ -170,7 +173,19 @@ class App:
         self._add_param(tab_seller, 0, 1, "卖家页超时(秒)", "seller_page_timeout", str(settings.seller_page_timeout_seconds), "int", min_val=10, max_val=3600,
                        tooltip="单个卖家页面加载超时时间")
 
-        # Tab 3: 循环控制
+        # Tab 3: 类目页配置
+        self._add_param(tab_category, 0, 0, "叶子层级", "leaf_levels", "4", "str",
+                       tooltip="遍历的叶子层级，4=四级类目(优先), 4,3=先四级后三级, 3=仅三级")
+        self._add_param(tab_category, 0, 1, "排序方式", "sorting", "score", "str",
+                       tooltip="score=流行度, new=新品, price=价格从低到高")
+        self._add_param(tab_category, 1, 0, "价格分段(RUB)", "price_ranges", "20.000;250.000,250.000;500.000,500.000;1000.000", "str",
+                       tooltip="逗号分隔的价格分段，每段格式 from.000;to.000。留空使用默认三段")
+        self._add_param(tab_category, 1, 1, "类目翻页上限", "max_pages", "500", "int", min_val=1, max_val=5000,
+                       tooltip="每个类目最多翻多少页")
+        self._add_param(tab_category, 2, 0, "断点续采", "resume_from_checkpoint", False, "bool",
+                       tooltip="勾选后跳过已完成类目+价格分段，从上次中断位置继续。取消勾选则全新开始")
+
+        # Tab 4: 循环控制
         self._add_param(tab_loop, 0, 0, "无人值守循环", "forever", True, "bool",
                        tooltip="勾选后采集完成自动循环, 不退出")
         self._add_param(tab_loop, 0, 1, "空闲等待(秒)", "idle_sleep_seconds", str(settings.collection_idle_sleep_seconds), "int", min_val=1, max_val=86400,
@@ -222,6 +237,13 @@ class App:
         )
         self._reset_checkpoint_btn.pack(side="left", padx=(6, 0))
 
+        self._clear_category_cp_btn = Button(
+            btn_frame, text="清除类目断点", bg="#e67e22", fg="white",
+            font=("Microsoft YaHei", 8), width=10, pady=3,
+            command=self._clear_category_checkpoints, relief="flat",
+        )
+        self._clear_category_cp_btn.pack(side="left", padx=(6, 0))
+
         # 右侧日志区
         log_frame = Frame(main_frame, bg="#ffffff", padx=6, pady=4, relief="ridge", bd=1)
         log_frame.pack(side="right", fill="both", expand=True, padx=(1, 2))
@@ -268,14 +290,22 @@ class App:
     def _update_linkages(self):
         mode = self._mode_var.get()
         is_ranking = (mode == "ranking")
+        is_category = (mode == "category_page")
         ranking_keys = [
             "main_type", "category_level", "page_from", "page_to",
             "sales_min", "sales_max", "avg_price_min", "avg_price_max",
             "sales_schema", "weight_max", "create_date_from", "create_date_to",
         ]
+        category_keys = [
+            "leaf_levels", "sorting", "price_ranges", "max_pages",
+        ]
         for key in ranking_keys:
             if key in self._param_widgets:
                 state = "normal" if is_ranking else "disabled"
+                self._param_widgets[key].configure(state=state)
+        for key in category_keys:
+            if key in self._param_widgets:
+                state = "normal" if is_category else "disabled"
                 self._param_widgets[key].configure(state=state)
 
     # ============================================================
@@ -439,6 +469,18 @@ class App:
             count = clear_all_checkpoints()
             self._append_log(f">>> 已清除 {count} 条断点记录\n")
             messagebox.showinfo("成功", f"已清除 {count} 条断点记录")
+        except Exception as e:
+            messagebox.showerror("失败", str(e))
+
+    def _clear_category_checkpoints(self):
+        """清除类目页采集断点记录"""
+        if not messagebox.askyesno("确认", "确定要清除类目页采集断点记录吗？\n下次采集将从头开始。"):
+            return
+        try:
+            from .repository import clear_category_page_checkpoints
+            count = clear_category_page_checkpoints()
+            self._append_log(f">>> 已清除 {count} 条类目页断点记录\n")
+            messagebox.showinfo("成功", f"已清除 {count} 条类目页断点记录")
         except Exception as e:
             messagebox.showerror("失败", str(e))
 

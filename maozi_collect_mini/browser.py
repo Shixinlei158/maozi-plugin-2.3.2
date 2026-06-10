@@ -603,6 +603,233 @@ class BrowserClient:
             pass
         return []
 
+    # ============================================================
+    # 类目页商品采集（Ozon entrypoint API）
+    # ============================================================
+    def fetch_category_page(
+        self,
+        slug: str,
+        category_id: int,
+        page: int = 1,
+        price_range: str | None = None,
+        sorting: str | None = None,
+        page_timeout: int = 15,
+    ) -> dict[str, Any]:
+        """通过 Ozon entrypoint API 获取类目页商品列表（单页）。
+
+        参数：
+            slug: 类目 URL slug，如 "elektronika"
+            category_id: Ozon 类目 ID，如 15500
+            page: 页码（1=第一页）
+            price_range: 价格筛选，如 "1.000;250.000"（RUB）
+            sorting: 排序方式，如 "score", "new", "price"
+            page_timeout: 单次请求超时秒数
+
+        返回：
+            {"items": [...], "page": N, "total_pages": N|None, "has_next": bool,
+             "brand_filtered": N, "total_items": N}
+            或 {"error": "..."}
+        """
+        from urllib.parse import urlencode
+        try:
+            page_obj = self._get_ozon_page()
+
+            # 构建类目 path
+            category_path = f"/category/{slug}-{category_id}/"
+            params = []
+            if page > 1:
+                params.append(("page", str(page)))
+            if sorting:
+                params.append(("sorting", sorting))
+            if price_range:
+                params.append(("currency_price", price_range))
+
+            query_string = urlencode(params)
+            full_path = category_path
+            if query_string:
+                full_path += "?" + query_string
+
+            # JS 注入：调用 entrypoint API
+            import json
+            raw = page_obj.evaluate(
+                """
+                async ({ path, timeoutMs }) => {
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), timeoutMs);
+                    try {
+                        const r = await fetch(
+                            `/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(path)}`,
+                            { credentials: "include", signal: controller.signal }
+                        );
+                        clearTimeout(timer);
+                        return { ok: r.ok, status: r.status, text: await r.text() };
+                    } catch (e) {
+                        return { ok: false, status: 0, text: String(e) };
+                    }
+                }
+                """,
+                {"path": full_path, "timeoutMs": page_timeout * 1000},
+            )
+
+            if not raw.get("ok"):
+                return {"error": f"entrypoint HTTP {raw.get('status')}: {raw.get('text', '')[:200]}", "items": []}
+
+            data = json.loads(raw["text"])
+            widget_states = data.get("widgetStates") or {}
+
+            # 解析商品 tiles
+            grid_key = next((k for k in widget_states if k.startswith("tileGridDesktop-")), None)
+            items = []
+            if grid_key:
+                grid_raw = widget_states[grid_key]
+                if isinstance(grid_raw, str):
+                    grid_raw = json.loads(grid_raw)
+                tiles = grid_raw.get("items") or []
+                for tile in tiles:
+                    info = self._extract_tile_info(tile)
+                    if info:
+                        items.append(info)
+
+            # 翻页信息
+            has_next = False
+            total_pages = None
+            pag_key = next((k for k in widget_states if k.startswith("infiniteVirtualPaginator-")), None)
+            if pag_key:
+                pag_raw = widget_states[pag_key]
+                if isinstance(pag_raw, str):
+                    pag_raw = json.loads(pag_raw)
+                if isinstance(pag_raw, dict):
+                    has_next = bool(pag_raw.get("nextPage"))
+                    # 尝试提取总页数
+                    total_pages = pag_raw.get("totalPages") or pag_raw.get("pageCount")
+
+            # 如果翻页 widget 没给总页数，从 shared 或 pageInfo 提取
+            if not total_pages:
+                shared = data.get("shared") or {}
+                total_pages = shared.get("totalPages") or shared.get("pageCount")
+
+            return {
+                "items": items,
+                "page": page,
+                "total_pages": total_pages,
+                "has_next": has_next,
+                "total_items": len(items),
+                "category_path": full_path,
+            }
+
+        except Exception as exc:
+            return {"error": str(exc), "items": []}
+
+    def _extract_tile_info(self, tile: dict[str, Any]) -> dict[str, Any] | None:
+        """从 tileGridDesktop 的单个商品 tile 中提取字段"""
+        import json as _json
+
+        action = tile.get("action") or {}
+        href = action.get("link")
+        if not href:
+            return None
+
+        sku = str(tile.get("sku") or tile.get("id") or "")
+
+        # 标题（textDS 或 textAtom）
+        title = None
+        main_state = tile.get("mainState") or []
+        for block in main_state:
+            block_type = block.get("type", "")
+            if block_type == "textDS":
+                title = ((block.get("textDS") or {}).get("text") or "").strip() or None
+                break
+            if block_type == "textAtom":
+                title = ((block.get("textAtom") or {}).get("text") or "").strip() or None
+                break
+
+        # 价格
+        price_text = None
+        price_amount = None
+        currency = None
+        for block in main_state:
+            if block.get("type") != "priceV2":
+                continue
+            parts = ((block.get("priceV2") or {}).get("price") or [])
+            price_text = "".join((p.get("text") or "") for p in parts).strip() or None
+            import re as _re
+            if price_text:
+                cleaned = _re.sub(r"[^\d.,]", "", price_text.replace(",", "."))
+                try:
+                    price_amount = float(cleaned)
+                except ValueError:
+                    pass
+                if "₽" in price_text:
+                    currency = "RUB"
+            break
+
+        # 品牌 Logo（第一层品牌判定）
+        brand_logo_url = None
+        brand_logo = tile.get("brandLogo")
+        if isinstance(brand_logo, dict):
+            brand_logo_url = brand_logo.get("logo")
+
+        # labelListV2 品牌名（第二层品牌判定）
+        label_brand = None
+        for block in main_state:
+            if block.get("type") != "labelListV2":
+                continue
+            label_items = (block.get("labelListV2") or {}).get("items") or []
+            for li in label_items:
+                if li.get("type") == "text":
+                    txt = ((li.get("text") or {}).get("text") or "").strip()
+                    # 排除评分、货币等数字文本
+                    if txt and not _re.match(r"^[\d.,₽$€¥]+$", txt):
+                        label_brand = txt
+                        break
+            if label_brand:
+                break
+
+        # 图片
+        image_url = None
+        tile_image = tile.get("tileImage") or {}
+        for img_item in tile_image.get("items") or []:
+            img_link = (img_item.get("image") or {}).get("link")
+            if img_link:
+                image_url = img_link
+                break
+
+        # 库存
+        stock_max = None
+        multi_button = tile.get("multiButton") or {}
+        ozon_button = multi_button.get("ozonButton") or {}
+        atc = ozon_button.get("addToCart") or {}
+        qb = atc.get("quantityButton") or {}
+        max_items = qb.get("maxItems")
+        if isinstance(max_items, (int, float)):
+            stock_max = int(max_items)
+
+        # 评分
+        rating = tile.get("rating") or {}
+        rating_value = rating.get("value")
+        rating_count = rating.get("count")
+
+        # 品牌判定（品牌 Logo 或 labelListV2 品牌名）
+        is_branded = bool(brand_logo_url) or bool(label_brand)
+
+        return {
+            "sku": sku,
+            "href": href,
+            "product_url": href,
+            "title": title,
+            "price_text": price_text or "",
+            "price_amount": price_amount,
+            "currency": currency,
+            "image_url": image_url,
+            "stock_max": stock_max,
+            "brand_logo_url": brand_logo_url,
+            "label_brand": label_brand,
+            "is_branded": is_branded,
+            "rating_value": rating_value,
+            "rating_count": rating_count,
+            "raw_tile": _json.dumps(tile, ensure_ascii=False),
+        }
+
     def ping_cdp(self) -> dict[str, Any]:
         """检测CDP连接状态"""
         if not self.cdp_url:

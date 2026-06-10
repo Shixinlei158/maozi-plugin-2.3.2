@@ -530,3 +530,101 @@ def upsert_checkpoint(
 def clear_all_checkpoints() -> int:
     """清除所有采集断点（全新开始）"""
     return db.execute("DELETE FROM collection_checkpoint", {})
+
+
+# ============================================================
+# ozon_category_urls（Ozon官网类目表，用于类目页采集）
+# ============================================================
+def list_leaf_categories(leaf_levels: tuple[int, ...] = (4,)) -> list[dict[str, Any]]:
+    """获取叶子类目列表，末级优先级最高。
+
+    参数：
+        leaf_levels: 要采集的叶子层级，如 (4,) 表示只采四级类目（最优），
+                     (4, 3) 表示先采四级，四级采完再采三级叶子
+
+    返回按 level DESC 排序的类目列表，每个包含：
+        category_id, parent_id, level, name_ru, slug, url
+    """
+    if not leaf_levels:
+        return []
+
+    # 找出所有末级（无子类目）的指定层级的类目
+    # 按 level DESC 排序：四级优先于三级
+    levels_str = ",".join(str(lv) for lv in leaf_levels)
+    return db.fetch_all(
+        f"""
+        SELECT cu.category_id, cu.parent_id, cu.level, cu.name_ru, cu.slug, cu.url
+        FROM ozon_category_urls cu
+        WHERE cu.level IN ({levels_str})
+          AND NOT EXISTS (
+              SELECT 1 FROM ozon_category_urls child
+              WHERE child.parent_id = cu.category_id
+          )
+        ORDER BY cu.level DESC, cu.category_id
+        """,
+        {},
+    )
+
+
+def get_category_url_by_id(category_id: int) -> dict[str, Any] | None:
+    """获取单个类目的URL信息"""
+    return db.fetch_one(
+        "SELECT category_id, parent_id, level, name_ru, slug, url FROM ozon_category_urls WHERE category_id=%(cid)s",
+        {"cid": category_id},
+    )
+
+
+# ============================================================
+# category_page_checkpoint（类目页采集断点）
+# ============================================================
+def get_category_page_checkpoint(category_id: int, price_range: str) -> dict[str, Any] | None:
+    """读取类目页采集断点"""
+    import hashlib
+    key = hashlib.sha1(f"catpage:{category_id}:{price_range}".encode()).hexdigest()
+    return db.fetch_one(
+        "SELECT * FROM collection_checkpoint WHERE query_key=%(qk)s",
+        {"qk": key},
+    )
+
+
+def upsert_category_page_checkpoint(
+    category_id: int,
+    price_range: str,
+    category_label: str = "",
+    last_page_completed: int = 0,
+    total_pages_target: int = 0,
+    items_collected: int = 0,
+    status: str = "in_progress",
+) -> int:
+    """写入或更新类目页采集断点"""
+    import hashlib
+    key = hashlib.sha1(f"catpage:{category_id}:{price_range}".encode()).hexdigest()
+    return db.execute(
+        """
+        INSERT INTO collection_checkpoint
+          (query_key, category_label, last_page_completed, total_pages_target,
+           items_collected, status)
+        VALUES
+          (%(qk)s, %(label)s, %(page)s, %(total)s, %(items)s, %(status)s)
+        ON DUPLICATE KEY UPDATE
+          last_page_completed=VALUES(last_page_completed),
+          items_collected=VALUES(items_collected),
+          status=VALUES(status)
+        """,
+        {
+            "qk": key,
+            "label": category_label[:255],
+            "page": last_page_completed,
+            "total": total_pages_target,
+            "items": items_collected,
+            "status": status,
+        },
+    )
+
+
+def clear_category_page_checkpoints() -> int:
+    """清除类目页采集断点"""
+    return db.execute(
+        "DELETE FROM collection_checkpoint WHERE query_key LIKE 'catpage:%'",
+        {},
+    )
