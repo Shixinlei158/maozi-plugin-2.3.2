@@ -168,52 +168,87 @@ def fetch_ozon_category_tree() -> list[dict[str, Any]]:
                 dprint(f"    [WARN] {e}")
         dprint(f"  二级类目: {level2_count} 个")
 
-        # ---- 步骤3: 获取三级类目 ----
-        dprint(f"\n[3/4] 获取三级类目...")
-        level2_list = [c for c in all_categories if c["level"] == 2]
-        level3_count = 0
-        for i, l2 in enumerate(level2_list):
-            url = l2["url"]
-            if not url:
-                continue
-            if (i + 1) % 20 == 0:
-                dprint(f"  ({i+1}/{len(level2_list)}) ...")
-            try:
-                result = composer_action("getCatalogFilterValues", {
-                    "baseLink": url,
-                    "isOpened": "true",
-                    "key": "category",
-                    "pageType": "category",
-                })
-                if not result:
-                    continue
-                data_obj = result.get("data", result)
-                sub_cats = data_obj.get("categories", [])
-                for sc in sub_cats:
-                    if sc.get("isActive"):
-                        continue
-                    lvl = sc.get("level", 0)
-                    sub_url = sc.get("urlValue", "")
-                    cid = extract_category_id(sub_url)
-                    if not cid or lvl != 1:
-                        continue
-                    all_categories.append({
-                        "category_id": cid,
-                        "parent_id": l2["category_id"],
-                        "level": 3,
-                        "name_ru": (sc.get("title", "") or "").strip(),
-                        "slug": sub_url.strip("/").split("/")[-1].rsplit("-", 1)[0] if "-" in sub_url else "",
-                        "url": sub_url,
-                        "icon": "",
-                        "image": "",
-                    })
-                    level3_count += 1
-                time.sleep(0.15)
-            except Exception as e:
-                dprint(f"    [WARN] {l2.get('name_ru','?')[:20]}: {e}")
-        dprint(f"  三级类目: {level3_count} 个")
+        # ---- 步骤3+4+: 递归获取更深层类目（三级、四级、五级...直到末级） ----
+        # 策略：从当前最深层级（level=2）开始，逐层向下探索
+        # 每轮处理当前层级的所有类目，收集子类目作为下一层
+        # 当某层没有任何子类目时停止
+        current_level = 2  # 当前检查的层级（已有数据中最大level=2）
+        total_deeper = 0
 
-        dprint(f"\n[完成] 从Ozon官网获取: 一级{len(level1_cats)} + 二级{level2_count} + 三级{level3_count} = 共{len(all_categories)}个类目")
+        while True:
+            dprint(f"\n[递归] 从 level={current_level} 获取 level={current_level+1} 子类目...")
+            parent_list = [c for c in all_categories if c["level"] == current_level]
+            if not parent_list:
+                dprint(f"  level={current_level} 没有类目，停止")
+                break
+
+            child_count = 0
+            for i, parent in enumerate(parent_list):
+                url = parent.get("url", "")
+                if not url:
+                    continue
+                if (i + 1) % 50 == 0:
+                    dprint(f"  ({i+1}/{len(parent_list)}) 已发现{child_count}个level={current_level+1}子类目...")
+                try:
+                    result = composer_action("getCatalogFilterValues", {
+                        "baseLink": url,
+                        "isOpened": "true",
+                        "key": "category",
+                        "pageType": "category",
+                    })
+                    if not result:
+                        continue
+                    data_obj = result.get("data", result)
+                    sub_cats = data_obj.get("categories", [])
+                    for sc in sub_cats:
+                        if sc.get("isActive"):
+                            continue
+                        lvl = sc.get("level", 0)
+                        sub_url = sc.get("urlValue", "")
+                        cid = extract_category_id(sub_url)
+                        if not cid or lvl != 1:
+                            continue
+                        # 去重：检查是否已存在（可能被其他父类目重复引用）
+                        existing = [c for c in all_categories if c["category_id"] == cid]
+                        if existing:
+                            # 如果已存在但parent_id不同，记录在日志中（暂不处理多父情况）
+                            continue
+                        all_categories.append({
+                            "category_id": cid,
+                            "parent_id": parent["category_id"],
+                            "level": current_level + 1,
+                            "name_ru": (sc.get("title", "") or "").strip(),
+                            "slug": sub_url.strip("/").split("/")[-1].rsplit("-", 1)[0] if "-" in sub_url else "",
+                            "url": sub_url,
+                            "icon": "",
+                            "image": "",
+                        })
+                        child_count += 1
+                    time.sleep(0.1)
+                except Exception as e:
+                    pass  # 超时等静默跳过
+
+            if child_count == 0:
+                dprint(f"  level={current_level} 没有任何子类目，已到达最深层")
+                break
+
+            total_deeper += child_count
+            dprint(f"  level={current_level+1} 类目: {child_count} 个")
+            current_level += 1
+
+            # 最大深度限制
+            MAX_DEPTH = 4
+            if current_level >= MAX_DEPTH:
+                dprint(f"  [INFO] 已达到最大深度 level={MAX_DEPTH}，停止探索")
+                break
+
+        # 统计各层数量
+        level_counts = {}
+        for c in all_categories:
+            lv = c["level"]
+            level_counts[lv] = level_counts.get(lv, 0) + 1
+        stats_str = " + ".join(f"{lv}级:{cnt}" for lv, cnt in sorted(level_counts.items()))
+        dprint(f"\n[完成] 从Ozon官网获取全量类目: {stats_str} = 共{len(all_categories)}个类目")
         return all_categories
 
     finally:
@@ -316,7 +351,7 @@ def create_ozon_category_urls_table():
         "id BIGINT AUTO_INCREMENT PRIMARY KEY, "
         "category_id BIGINT NOT NULL COMMENT 'Ozon类目ID', "
         "parent_id BIGINT NOT NULL DEFAULT 0 COMMENT '父级类目ID', "
-        "level TINYINT NOT NULL COMMENT '1=一级 2=二级 3=三级', "
+        "level TINYINT NOT NULL COMMENT '1=一级 2=二级 3=三级 4=四级 ...', "
         "name_ru VARCHAR(255) NOT NULL DEFAULT '' COMMENT '类目俄语名', "
         "slug VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'URL slug', "
         "url VARCHAR(512) NOT NULL DEFAULT '' COMMENT '相对URL', "

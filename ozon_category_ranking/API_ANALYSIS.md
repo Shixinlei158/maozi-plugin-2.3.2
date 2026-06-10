@@ -381,11 +381,12 @@ URL 示例：
 
 ### 6.1 新表 `ozon_category_urls`
 
-> **已建表并导入数据（2026-06-10）:** 该表已创建在 `ozon_selection` 数据库中。
+> **已建表并导入数据（2026-06-10 最终更新）:** 该表已创建在 `ozon_selection` 数据库中。
 > - 一级类目：29 个
-> - 二级类目：307 个
-> - 三级类目：1989 个
-> - 总计：2349 条记录
+> - 二级类目：305 个
+> - 三级类目：1966 个
+> - 四级类目：2716 个
+> - 总计：**5016 条记录**
 
 ```sql
 CREATE TABLE IF NOT EXISTS ozon_category_urls (
@@ -410,34 +411,31 @@ CREATE TABLE IF NOT EXISTS ozon_category_urls (
 
 | 字段 | 来源 | 说明 |
 |------|------|------|
-| `category_id` | catalogMenu.id 或 categoryFilter 的 URL 中提取 | Ozon 原始类目 ID |
+| `category_id` | catalogMenu.id 或 categoryFilter 的 URL 中提取 | Ozon 官网类目 ID（如 15500） |
 | `parent_id` | 父类目的 category_id | 用于构建层级关系 |
-| `level` | categoryFilter 的 level（需转换为绝对层级 1/2/3） | 1=一级, 2=二级, 3=三级 |
-| `name_zh` | 项目已有的 `ozon_categories` 翻译数据 | 中文名，需关联已有表 |
+| `level` | categoryFilter 的 level（已转换为绝对层级 1/2/3） | 1=一级, 2=二级, 3=三级 |
 | `name_ru` | catalogMenu.title 或 categoryFilter.title | 俄语原名 |
 | `slug` | URL 中 `-` 之前的部分 | 如 `elektronika` |
 | `url` | catalogMenu.url 或 categoryFilter.urlValue | 相对 URL |
-| `has_children` | 是否有 level 比它大 1 的子记录 | 加速判断 |
-| `child_count` | 子类目数量 | 用于采集时的遍历计数 |
+| `icon` | catalogMenu.icon（仅一级类目有） | 类目图标标识 |
+| `image` | catalogMenu.image（仅一级类目有） | 类目图片 URL |
 
 ### 6.3 与现有 `ozon_categories` 表的关系
 
-现有 `ozon_categories` 表（来自毛子ERP的类目树）：
-```sql
-CREATE TABLE IF NOT EXISTS ozon_categories (
-    category_id BIGINT,
-    name_zh VARCHAR(255),
-    name_en VARCHAR(255),
-    parent_id BIGINT,
-    level TINYINT
-);
-```
+**验证结论（2026-06-10 实测）：**
 
-**差异：**
-- `ozon_categories` 的类目 ID 来自毛子 ERP 的榜单 API（`cate1_id`/`cate2_id`/`cate3_id`），可能与 Ozon 官网的 category_id 不同
-- `ozon_category_urls` 的 category_id 来自 Ozon 官网 URL 中的数字 ID，专门用于拼接类目页面 URL
+Ozon 官网类目 ID 与毛子 ERP 类目 ID **完全不一致，交集为 0**。
 
-**建议：** 可以尝试关联两张表（如果 ID 能匹配上），用 `ozon_categories.name_zh` 补充 `ozon_category_urls.name_zh` 的中文翻译。
+| 数据源 | 一级类目数 | ID 范围示例 | ID 来源 |
+|--------|-----------|-------------|---------|
+| Ozon 官网 | 29 个 | 6000, 6500, 7000, ..., 15500, 16500, 17777 | Ozon `catalogMenu` widget |
+| 毛子 ERP (`ozon_categories`) | 26 个 | 15621031, 17027482, ..., 99999999 | 毛子榜单 API `cate1_id` |
+
+两套 ID 体系完全不同，无法关联。`ozon_category_urls` 必须作为独立表存在，专门用于 Ozon 官网类目页面 URL 的拼接和导航。
+
+**一级类目 ID 对比：**
+- **Ozon 官网（29 个）：** 6000, 6500, 7000, 7500, 7697, 8000, 8500, 9000, 9200, 9700, 10500, 11000, 12300, 13100, 13300, 13500, 14500, 14572, 15000, 15500, 16500, 17777, 18000, 32056, 33332, 35659, 37234, 39803, 50001
+- **毛子 ERP（26 个）：** 15621031, 15621032, 15621042, 17027482, 17027484, ..., 92130764, 99999999, 200001482
 
 ---
 
