@@ -178,10 +178,10 @@ class App:
                        tooltip="遍历的叶子层级，4=四级类目(优先), 4,3=先四级后三级, 3=仅三级")
         self._add_param(tab_category, 0, 1, "排序方式", "sorting", "score", "str",
                        tooltip="score=流行度, new=新品, price=价格从低到高")
-        self._add_param(tab_category, 1, 0, "价格分段(RUB)", "price_ranges", "20.000;250.000,250.000;500.000,500.000;1000.000", "str",
-                       tooltip="逗号分隔的价格分段，每段格式 from.000;to.000。留空使用默认三段")
-        self._add_param(tab_category, 1, 1, "类目翻页上限", "max_pages", "500", "int", min_val=1, max_val=5000,
-                       tooltip="每个类目最多翻多少页")
+        self._add_param(tab_category, 1, 0, "价格分段(RUB)", "price_ranges", "220.000;1100.000,1100.000;3300.000,3300.000;11000.000", "str",
+                       tooltip="逗号分隔的价格分段，每段格式 from.000;to.000。留空使用默认三段(约20-1000CNY)")
+        self._add_param(tab_category, 1, 1, "类目翻页上限", "max_pages", "0", "int", min_val=0, max_val=5000,
+                       tooltip="每个类目最多翻多少页，0=不限制")
         self._add_param(tab_category, 2, 0, "断点续采", "resume_from_checkpoint", False, "bool",
                        tooltip="勾选后跳过已完成类目+价格分段，从上次中断位置继续。取消勾选则全新开始")
 

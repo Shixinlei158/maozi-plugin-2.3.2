@@ -32,11 +32,11 @@ from .rules import (
 )
 from .config import settings
 
-# 默认价格分段（RUB），从左到右依次递增
+# 默认价格分段（RUB），对应约20-1000 CNY (rub_to_cny_rate=0.0912: 220₽≈20CNY, 11000₽≈1000CNY)
 _DEFAULT_PRICE_RANGES = [
-    "20.000;250.000",
-    "250.000;500.000",
-    "500.000;1000.000",
+    "220.000;1100.000",
+    "1100.000;3300.000",
+    "3300.000;11000.000",
 ]
 
 # 品牌过滤空白页阈值：连续N页全品牌商品则跳过该类目
@@ -45,8 +45,8 @@ _MAX_CONSECUTIVE_BRANDED_PAGES = 5
 # 空页连续阈值：连续N页空则结束该类目采集
 _MAX_CONSECUTIVE_EMPTY_PAGES = 3
 
-# 翻页安全上限
-_MAX_PAGES_PER_CATEGORY = 500
+# 翻页安全上限（0=不限制）
+_MAX_PAGES_PER_CATEGORY = 0
 
 
 def _build_category_url(slug: str, category_id: int) -> str:
@@ -72,7 +72,7 @@ def run_category_page_collection(
             - leaf_levels: 要采集的叶子层级，如 "4" 或 "4,3"（默认 "4"）
             - price_ranges: 自定义价格分段（逗号分隔），为空则用默认三段
             - sorting: 排序方式 "score"/"new"/"price"（默认 "score"）
-            - max_pages: 每个类目最大翻页数（默认 500）
+            - max_pages: 每个类目最大翻页数（默认 0=不限制）
             - resume_from_checkpoint: 是否启用断点续采
         stop_flag: threading.Event 对象，用于外部停止采集
         resume: 是否启用断点续采
@@ -165,7 +165,7 @@ def run_category_page_collection(
                         continue
                     if checkpoint and checkpoint.get("status") == "in_progress":
                         last_page = int(checkpoint.get("last_page_completed", 0))
-                        if last_page >= max_pages:
+                        if max_pages > 0 and last_page >= max_pages:
                             print(f"  价格分段 {_price_range_label(price_range)}: 已完成(last={last_page})，补标记")
                             upsert_category_page_checkpoint(
                                 category_id, price_range, f"{name_ru} L{level}",
@@ -189,7 +189,7 @@ def run_category_page_collection(
                 empty_pages = 0
                 branded_pages = 0
 
-                while current_page <= max_pages:
+                while max_pages <= 0 or current_page <= max_pages:
                     if stop_flag and stop_flag.is_set():
                         print(f"  page {current_page}: 收到停止信号，保存断点")
                         if resume:
