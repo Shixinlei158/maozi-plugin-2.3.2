@@ -19,6 +19,7 @@ from typing import Any
 
 from .browser import BrowserClient
 from .config import settings
+from .feishu import send_notification
 from .maozi_api import MaoziClient
 from .repository import (
     list_due_sellers,
@@ -98,6 +99,9 @@ def run_seller_collection(limit: int = 0, stop_flag=None) -> dict[str, int]:
             print("ERROR: 毛子ERP登录态验证失败")
             return stats
 
+        _MAX_CONSECUTIVE_HOMEPAGE_FAILURES = 10
+        consecutive_homepage_failures = 0
+
         while True:
             # 检查停止信号
             if stop_flag and stop_flag.is_set():
@@ -132,10 +136,19 @@ def run_seller_collection(limit: int = 0, stop_flag=None) -> dict[str, int]:
                     )
 
                     if result.get("error"):
-                        print(f"  卖家主页加载失败: {result['error']}")
+                        consecutive_homepage_failures += 1
+                        print(f"  卖家主页加载失败 (连续{consecutive_homepage_failures}/{_MAX_CONSECUTIVE_HOMEPAGE_FAILURES}): {result['error']}")
                         stats["errors"] += 1
                         stats["sellers_processed"] += 1
+                        if consecutive_homepage_failures >= _MAX_CONSECUTIVE_HOMEPAGE_FAILURES:
+                            msg = f"连续{consecutive_homepage_failures}次打开卖家主页失败，暂停采集"
+                            print(f"  !! {msg}")
+                            send_notification(msg, level="ERROR")
+                            break
                         continue
+
+                    # 主页打开成功，重置连续失败计数
+                    consecutive_homepage_failures = 0
 
                     items = result.get("items") or []
                     if not items:
@@ -321,10 +334,20 @@ def run_seller_collection(limit: int = 0, stop_flag=None) -> dict[str, int]:
                     browser.ensure_authenticated(max_retries=1)
 
                 except Exception as exc:
-                    print(f"  卖家处理异常: {exc}")
+                    consecutive_homepage_failures += 1
+                    print(f"  卖家处理异常 (连续{consecutive_homepage_failures}/{_MAX_CONSECUTIVE_HOMEPAGE_FAILURES}): {exc}")
                     stats["errors"] += 1
                     stats["sellers_processed"] += 1
+                    if consecutive_homepage_failures >= _MAX_CONSECUTIVE_HOMEPAGE_FAILURES:
+                        msg = f"连续{consecutive_homepage_failures}次卖家处理异常(含主页打开失败)，暂停采集"
+                        print(f"  !! {msg}")
+                        send_notification(msg, level="ERROR")
+                        break
                     continue
+
+            # 连续失败达阈值则退出外层循环
+            if consecutive_homepage_failures >= _MAX_CONSECUTIVE_HOMEPAGE_FAILURES:
+                break
 
             # 如果有limit限制且已经够数了
             if limit > 0 and stats["sellers_processed"] >= limit:
