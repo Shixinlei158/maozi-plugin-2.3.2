@@ -706,7 +706,8 @@ class BrowserClient:
             # 如果翻页 widget 没给总页数，从 shared 或 pageInfo 提取
             if not total_pages:
                 shared = data.get("shared") or {}
-                total_pages = shared.get("totalPages") or shared.get("pageCount")
+                if isinstance(shared, dict):
+                    total_pages = shared.get("totalPages") or shared.get("pageCount")
 
             return {
                 "items": items,
@@ -723,36 +724,63 @@ class BrowserClient:
     def _extract_tile_info(self, tile: dict[str, Any]) -> dict[str, Any] | None:
         """从 tileGridDesktop 的单个商品 tile 中提取字段"""
         import json as _json
+        import re as _re
+
+        # 防御：tile 必须是 dict
+        if not isinstance(tile, dict):
+            return None
 
         action = tile.get("action") or {}
+        if not isinstance(action, dict):
+            action = {}
         href = action.get("link")
         if not href:
             return None
 
         sku = str(tile.get("sku") or tile.get("id") or "")
 
-        # 标题（textDS 或 textAtom）
+        # 标题：优先取有 id 的 textDS（真正标题），其次取无 id 的（库存等）
         title = None
+        fallback_title = None
         main_state = tile.get("mainState") or []
+        if not isinstance(main_state, list):
+            main_state = []
         for block in main_state:
+            if not isinstance(block, dict):
+                continue
             block_type = block.get("type", "")
             if block_type == "textDS":
-                title = ((block.get("textDS") or {}).get("text") or "").strip() or None
-                break
-            if block_type == "textAtom":
-                title = ((block.get("textAtom") or {}).get("text") or "").strip() or None
-                break
+                txt = ((block.get("textDS") or {}).get("text") or "").strip() or None
+                if block.get("id"):
+                    # 有 id 的 textDS 是产品标题
+                    if not title:
+                        title = txt
+                        break
+                elif not fallback_title and txt:
+                    fallback_title = txt
+            elif block_type == "textAtom":
+                txt = ((block.get("textAtom") or {}).get("text") or "").strip() or None
+                if txt:
+                    if not title:
+                        title = txt
+                        break
+        if not title:
+            title = fallback_title
 
-        # 价格
+        # 价格（只取首个价格=当前售价，忽略划线原价）
         price_text = None
         price_amount = None
         currency = None
         for block in main_state:
+            if not isinstance(block, dict):
+                continue
             if block.get("type") != "priceV2":
                 continue
             parts = ((block.get("priceV2") or {}).get("price") or [])
-            price_text = "".join((p.get("text") or "") for p in parts).strip() or None
-            import re as _re
+            if parts:
+                first = parts[0]
+                if isinstance(first, dict):
+                    price_text = (first.get("text") or "").strip() or None
             if price_text:
                 cleaned = _re.sub(r"[^\d.,]", "", price_text.replace(",", "."))
                 try:
@@ -763,51 +791,63 @@ class BrowserClient:
                     currency = "RUB"
             break
 
-        # 品牌 Logo（第一层品牌判定）
+        # 品牌 Logo（主要品牌判定依据）
         brand_logo_url = None
         brand_logo = tile.get("brandLogo")
         if isinstance(brand_logo, dict):
             brand_logo_url = brand_logo.get("logo")
 
-        # labelListV2 品牌名（第二层品牌判定）
+        # labelListV2 品牌名（仅当有 brandLogo 时才作为补充信息提取）
         label_brand = None
-        for block in main_state:
-            if block.get("type") != "labelListV2":
-                continue
-            label_items = (block.get("labelListV2") or {}).get("items") or []
-            for li in label_items:
-                if li.get("type") == "text":
-                    txt = ((li.get("text") or {}).get("text") or "").strip()
-                    # 排除评分、货币等数字文本
-                    if txt and not _re.match(r"^[\d.,₽$€¥]+$", txt):
-                        label_brand = txt
-                        break
-            if label_brand:
-                break
+        if brand_logo_url:
+            for block in main_state:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "labelListV2":
+                    continue
+                label_items = (block.get("labelListV2") or {}).get("items") or []
+                for li in label_items:
+                    if not isinstance(li, dict):
+                        continue
+                    if li.get("type") == "text":
+                        txt = ((li.get("text") or {}).get("text") or "").strip()
+                        # 排除评分数字、评价计数等（仅数字/货币字符）
+                        if txt and not _re.match(r"^[\d.,₽$€¥ ]+$", txt) and "评价" not in txt and "отзыв" not in txt:
+                            label_brand = txt
+                            break
+                if label_brand:
+                    break
 
         # 图片
         image_url = None
         tile_image = tile.get("tileImage") or {}
-        for img_item in tile_image.get("items") or []:
-            img_link = (img_item.get("image") or {}).get("link")
-            if img_link:
-                image_url = img_link
-                break
+        if isinstance(tile_image, dict):
+            for img_item in tile_image.get("items") or []:
+                if not isinstance(img_item, dict):
+                    continue
+                img_link = (img_item.get("image") or {}).get("link")
+                if img_link:
+                    image_url = img_link
+                    break
 
         # 库存
         stock_max = None
         multi_button = tile.get("multiButton") or {}
-        ozon_button = multi_button.get("ozonButton") or {}
-        atc = ozon_button.get("addToCart") or {}
-        qb = atc.get("quantityButton") or {}
-        max_items = qb.get("maxItems")
-        if isinstance(max_items, (int, float)):
-            stock_max = int(max_items)
+        if isinstance(multi_button, dict):
+            ozon_button = multi_button.get("ozonButton") or {}
+            if isinstance(ozon_button, dict):
+                atc = ozon_button.get("addToCart") or {}
+                if isinstance(atc, dict):
+                    qb = atc.get("quantityButton") or {}
+                    if isinstance(qb, dict):
+                        max_items = qb.get("maxItems")
+                        if isinstance(max_items, (int, float)):
+                            stock_max = int(max_items)
 
         # 评分
         rating = tile.get("rating") or {}
-        rating_value = rating.get("value")
-        rating_count = rating.get("count")
+        rating_value = rating.get("value") if isinstance(rating, dict) else None
+        rating_count = rating.get("count") if isinstance(rating, dict) else None
 
         # 品牌判定（品牌 Logo 或 labelListV2 品牌名）
         is_branded = bool(brand_logo_url) or bool(label_brand)
