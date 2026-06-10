@@ -325,6 +325,66 @@ Ozon 只支持**正向选择**特定品牌（`/category/slug-id/brand_slug-brand
 
 **注意：** `paginator_token`、`search_page_state`、`start_page_id` 在**同一会话**内保持不变，只需从第一页响应中提取一次即可。
 
+### 4.2 无上限翻页：手动递增 `page` 参数
+
+**关键发现：** Ozon 类目页**不限制最大翻页数**。可以无限翻页（即使部分商品重复出现），不需要依赖 `paginator_token`/`search_page_state`/`start_page_id` 等复杂参数。只需手动递增 `page` 查询参数即可实现翻页。
+
+**手动翻页 URL 格式（推荐方案）：**
+
+```
+/category/{slug}-{id}/?page={N}
+/category/{slug}-{id}/?page={N}&sorting=score
+/category/{slug}-{id}/?page={N}&currency_price={from}.000;{to}.000
+/category/{slug}-{id}/?page={N}&sorting=score&currency_price={from}.000;{to}.000
+```
+
+**翻页规则：**
+- 第 1 页：`/category/{slug}-{id}/`（不带 `page` 参数，默认 page=1）
+- 第 2 页起：`/category/{slug}-{id}/?page={N}`（N 从 2 开始递增）
+- **无上限**：持续递增 `page` 直到返回空列表为止
+- 翻页可与其他筛选参数（排序、价格、boolFilter）组合使用
+
+**完整翻页示例（价格 1~250₽，按流行度排序）：**
+
+| page | URL |
+|------|-----|
+| 1 | `/category/elektronika-15500/?sorting=score&currency_price=1.000;250.000` |
+| 2 | `/category/elektronika-15500/?page=2&sorting=score&currency_price=1.000;250.000` |
+| 3 | `/category/elektronika-15500/?page=3&sorting=score&currency_price=1.000;250.000` |
+| N | `/category/elektronika-15500/?page={N}&sorting=score&currency_price=1.000;250.000` |
+
+**两种翻页方案对比：**
+
+| 特性 | token方案（nextPage） | 手动递增page（推荐） |
+|------|----------------------|---------------------|
+| 依赖参数 | 需提取 token/search_page_state/start_page_id | 仅需 page 数字 |
+| 实现复杂度 | 高，每页需解析 nextPage | 低，直接拼接 URL |
+| 会话独立性 | 同一会话内 token 固定 | 完全无状态，任意会话可用 |
+| 出错恢复 | token 过期需重新获取第 1 页 | 直接从出错页码重试 |
+| 可组合性 | nextPage 已包含所有参数 | 可自由组合排序/价格/boolFilter |
+| 终止条件 | nextPage 为 null 时停止 | 返回空列表时停止 |
+
+**Python 翻页伪代码：**
+
+```python
+page = 1
+while True:
+    path = f"/category/{slug}-{category_id}/"
+    if page > 1:
+        params = [f"page={page}"]
+        if sorting:
+            params.append(f"sorting={sorting}")
+        if price_range:
+            params.append(f"currency_price={price_range}")
+        path += "?" + "&".join(params)
+    result = entrypoint(path)
+    items = extract_items(result)
+    if not items:
+        break
+    process(items)
+    page += 1
+```
+
 ---
 
 ## 五、商品数据结构 (tileGridDesktop)
@@ -546,3 +606,9 @@ Ozon 官网类目 ID 与毛子 ERP 类目 ID **完全不一致，交集为 0**�
 6. **每页商品数不固定：** 实测 8 个/页，但可能因类目不同而变化，不应硬编码
 
 7. **价格筛选格式固定：** `currency_price={from}.000;{to}.000`（`.000` 后缀可能可选，但保险起见保留）
+
+8. **"无品牌"无法通过 URL 筛选：** Ozon 只支持正向选择特定品牌（子路径格式），不支持"排除品牌"。项目中 `require_unbranded=True` 的过滤必须在获取数据后在 Python 应用层执行（检查商品品牌是否在 `ALLOWED_BRAND_NAMES` 白名单）
+
+9. **urlValue 是子路径而非参数：** checkboxesFilter 和 radioFilter 的 urlValue 是相对路径（如 `/category/slug-id/brand_slug-brand_id/`），不是查询参数。但 boolFilter 和 priceFilter 使用传统查询参数 `?key=value` 格式
+
+10. **不同类目筛选器不同：** 智能手机(15502)无品牌筛选器，女装(7501)有品牌/尺码/材质/颜色/季节/产地/卖家等丰富筛选器。采集时应根据每个类目的 `filtersDesktop` widget 动态获取可用筛选器列表
