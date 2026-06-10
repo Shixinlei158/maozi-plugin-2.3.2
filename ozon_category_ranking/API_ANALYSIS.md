@@ -224,24 +224,68 @@ URL 示例：
 }
 ```
 
-### 3.3 其他筛选器类型
+### 3.3 其他筛选器类型（已实战验证 2026-06-11）
 
-| key | type | URL 参数格式 | 说明 |
-|-----|------|-------------|------|
-| `currency_price` | multipleRangesFilter | `?currency_price=1000.000;5000.000` | 价格范围（卢布） |
-| `is_promo` | boolFilter | `?is_promo=1` | 促销商品 |
-| `isdiscount` | boolFilter | `?isdiscount=1` | 折扣商品 |
-| `is_installment` | boolFilter | `?is_installment=1` | 分期付款 |
-| `brandcertified` | boolFilter | `?brandcertified=1` | 原装正品 |
-| `is_official_brand_seller` | boolFilter | `?is_official_brand_seller=1` | 官方品牌店 |
-| `has_points_from_reviews` | boolFilter | `?has_points_from_reviews=1` | 留评获分 |
-| `delivery` | checkboxesFilter | radio 单选，key: 0/1/2/4/8 | 配送时效（不重要/今天/明天/3天/7天） |
-| `brand` | checkboxesFilter | 多选 | 品牌筛选 |
-| `color` | colorFilter | - | 颜色筛选 |
-| `type` | checkboxesFilter | 多选 | 商品类型 |
-| `seller` | checkboxesFilter | 多选 | 卖家筛选 |
+#### BoolFilter（开关型筛选）
 
-> **注意：** 上述 URL 参数格式中 boolFilter 和 checkboxesFilter 的具体 URL 拼接方式需要通过浏览器实际筛选后观察 URL 变化来确认。当前分析基于 filter widget 的 JSON 结构推断。
+**URL 格式：** `?key=1`
+
+**已验证有效的 boolFilter：**
+
+| key | URL 参数 | 效果 |
+|-----|---------|------|
+| `is_promo` | `?is_promo=1` | 仅促销商品 |
+| `brandcertified` | `?brandcertified=1` | 原装正品 |
+| `is_official_brand_seller` | `?is_official_brand_seller=1` | 官方品牌店 |
+| `is_installment` | `?is_installment=1` | 支持分期付款 |
+| `isdiscount` | `?isdiscount=1` | 折扣商品 |
+| `has_points_from_reviews` | `?has_points_from_reviews=1` | 留评获分 |
+
+**示例：** `?is_promo=1&brandcertified=1` — 两个 boolFilter 组合
+
+#### CheckboxesFilter（多选型筛选）
+
+这类筛选器（品牌、类型、颜色、配送等）通过 `urlValue` 指定子页面路径：
+
+| key | 类型 | URL 格式 |
+|-----|------|----------|
+| `brand` | 品牌 | `urlValue` 为完整路径如 `/category/smartfony-15502/apple-26370752/` |
+| `delivery` | 配送时效 | radio 单选，key: 0/1/2/4/8（0-不重要/1-今天/2-明天/4-3天/8-7天） |
+| `type` | 商品类型 | urlValue 子路径 |
+| `filtersizeru` | 尺码 | 女装类特有，key 如 `42`/`44`/`46`... |
+| `material` | 材质 | 女装类特有 |
+| `color` | 颜色 | colorFilter 类型 |
+| `seller` | 卖家 | urlValue 子路径 |
+
+**品牌筛选示例（来自配件类目）：**
+```
+品牌 Apple → urlValue: /category/aksessuary-i-materialy-dlya-rukodeliya-13646/apple-26370752/
+品牌 Xiaomi → urlValue: /category/aksessuary-i-materialy-dlya-rukodeliya-13646/xiaomi-26944075/
+```
+品牌筛选的 URL 格式为：`/category/{slug}-{id}/{brand_slug}-{brand_id}/`
+
+#### RadioFilter（单选型筛选）
+
+| key | 说明 | 示例 URL |
+|-----|------|----------|
+| `season` | 季节 | urlValue 子路径 |
+| `country` | 产地 | urlValue 子路径 |
+
+#### 不同类目的筛选器差异
+
+**重要：** 不同类目可用的筛选器**完全不同**。例如：
+- 智能手机(15502)：无品牌筛选器
+- 配件和材料(13646)：有品牌、价格、颜色、boolFilter
+- 女装(7501)：有品牌、尺码、材质、颜色、季节、产地、卖家等
+
+#### 【关键结论】"无品牌"无法通过 URL 参数实现
+
+Ozon 只支持**正向选择**特定品牌（`/category/slug-id/brand_slug-brand_id/`），**不支持"排除品牌"或"无品牌"筛选**。
+
+项目中种子采集的"无品牌"要求（`require_unbranded=True`）必须在**应用层处理**：
+1. 用 entrypoint API 获取商品列表时，不限定品牌范围
+2. 下载完数据后，在 Python 端检查每个商品的品牌是否在 `ALLOWED_BRAND_NAMES` 白名单中
+3. 不在白名单中的商品即为"无品牌"商品，满足筛选条件
 
 ---
 
@@ -495,7 +539,7 @@ Ozon 官网类目 ID 与毛子 ERP 类目 ID **完全不一致，交集为 0**�
 
 3. **catalogMenu 天然有完整一级类目：** 不需要通过 categoryChildV3 API（此 API 实测返回 500）
 
-4. **getCatalogFilterValues 不递归：** 每次调用只返回下一级子类目，需要遍历二级类目再次调用才能获取三级
+4. **getCatalogFilterValues 不递归：** 每次调用只返回下一级子类目，需要逐层遍历（二→三→四），直到返回空为止。实测最大深度 4 级，约 38% 三级有四级子类目
 
 5. **翻页 token 可复用：** `paginator_token`、`search_page_state`、`start_page_id` 在同一会话内不变
 
